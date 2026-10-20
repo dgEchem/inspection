@@ -13,7 +13,7 @@ Files:
 
 ## Capture tab
 
-* **Area** and **Part #** replace zone and modillion number. Next keeps the
+* **Area** and **Part #**. Next keeps the
   area and the part type and increments the number.
 * **Part type** dropdown (I-beam / L bracket / C bracket / Other). The lettered
   diagram and the surface list come from the type.
@@ -29,13 +29,12 @@ Files:
   * **quick-pick defects** and **notes** for that surface.
 * **General notes** for the part at the bottom.
 
-Everything saves instantly; the backup line and export rules are the same as
-the modillion app (Report tab > Export project zip; big projects export in
+Everything saves instantly (Report tab > Export project zip; big projects export in
 numbered files).
 
 ## Report
 
-A page per part, same frame as the modillion report: grey header bar
+A page per part: grey header bar
 "Area 1: Part 3 (I-beam)", the overall photo with the general notes beside it,
 a row of small extra overall photos if any, then one row per surveyed surface
 with the surface photo on the left and, on the right, the thickness readings
