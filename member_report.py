@@ -152,7 +152,7 @@ def build(project_json, out_docx):
             if x["key"] == key: return x["desc"]
         return ""
     def checked(m):
-        order = [x["key"] for x in (types.get(m.get("type")) or {}).get("surfaces", [])]
+        order = [mk["key"] for mk in m.get("markers", [])] if m.get("type") == "M" else [x["key"] for x in (types.get(m.get("type")) or {}).get("surfaces", [])]
         ks = [k for k in m.get("checked", []) if k in m["surfaces"]]
         return sorted(ks, key=lambda k: order.index(k) if k in order else 99)
 
@@ -178,12 +178,28 @@ def build(project_json, out_docx):
         return out, im.width, im.height
     def fit(w, h, mw, mh):
         sc = min(mw / w, mh / h); return w * sc, h * sc
-    def add_photo(cell, rel, mw, mh, align=WD_ALIGN_PARAGRAPH.CENTER, para=None):
+    def annotate(path, markers):
+        """Draw the lettered points of a "Marked on photo" part onto a copy of the overall photo."""
+        from PIL import ImageDraw, ImageFont
+        im = Image.open(path); im = ImageOps.exif_transpose(im).convert("RGB"); d = ImageDraw.Draw(im)
+        r = max(14, int(min(im.size) * 0.032))
+        try: font = ImageFont.truetype("DejaVuSans-Bold.ttf", int(r * 1.3))
+        except Exception:
+            try: font = ImageFont.truetype("arialbd.ttf", int(r * 1.3))
+            except Exception: font = ImageFont.load_default()
+        for mk in markers:
+            x, y = float(mk["x"]) * im.width, float(mk["y"]) * im.height
+            d.ellipse([x - r, y - r, x + r, y + r], fill=(30, 136, 229), outline="white", width=max(2, int(r * 0.18)))
+            d.text((x, y), str(mk["key"]), fill="white", font=font, anchor="mm")
+        out = os.path.join(tmp, f"ann_{abs(hash(path)) & 0xFFFFFFFF:08x}.jpg"); im.save(out, "JPEG", quality=92); return out, im.width, im.height
+    def add_photo(cell, rel, mw, mh, align=WD_ALIGN_PARAGRAPH.CENTER, para=None, markers=None):
         pp = para or cell.paragraphs[0]; pp.alignment = align; pp.paragraph_format.space_before = Pt(4); pp.paragraph_format.space_after = Pt(4)
         src = os.path.join(p["_photo_dir"], rel) if rel else ""
         if not rel or not os.path.isfile(src):
             r = pp.add_run("[photo missing]"); r.font.size = Pt(9); r.font.color.rgb = RGBColor(0xC0, 0, 0); return False
-        path, w, h = prep(src); fw, fh = fit(w, h, mw, mh); pp.add_run().add_picture(path, width=Inches(fw), height=Inches(fh)); return True
+        path, w, h = prep(src)
+        if markers: path, w, h = annotate(path, markers)
+        fw, fh = fit(w, h, mw, mh); pp.add_run().add_picture(path, width=Inches(fw), height=Inches(fh)); return True
     def page_field(paragraph):
         run = paragraph.add_run(); run.bold = True
         for tag, text in (("begin", None), (None, "PAGE"), ("end", None)):
@@ -259,18 +275,31 @@ def build(project_json, out_docx):
             pp = hc.paragraphs[0]; pp.alignment = WD_ALIGN_PARAGRAPH.CENTER
             for txt, b, sz in ((f"{gname} {m['zone']}: ", False, 14), (f"{name} {m['number']}", True, 14), (f"  ({tname(m)})", False, 11)):
                 r = pp.add_run(txt); r.bold = b; r.font.size = Pt(sz); r.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
-            # overall | general notes
-            row = t.add_row(); keep(row); row_h(row, photo_h + 0.15)
-            c = row.cells[0]; c.width = Inches(col_w); c.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
-            ok = bool(m["overall"]) and add_photo(c, m["overall"][0], photo_w, photo_h); ofig = 0
-            if ok: ofig = fig; fig += 1
-            c = row.cells[1]; c.width = Inches(col_w); c.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
-            pp = c.paragraphs[0]; pp.paragraph_format.space_before = Pt(4)
-            for k, line in enumerate((m.get("notes") or "").strip().splitlines() or [""]):
-                if k: pp = c.add_paragraph()
-                pp.add_run(line).font.size = Pt(11)
-            row = t.add_row(); row_h(row, 0.22)
-            caption(row.cells[0], f"Figure {ofig}: {name} {lbl} Overall" if ofig else f"{name} {lbl} Overall (no photo)"); caption(row.cells[1], "Notes")
+            # overall | general notes  (a marked-up photo gets the full width so the letters stay legible)
+            marked = m.get("type") == "M" and m.get("markers") and m["overall"]
+            if marked:
+                row = t.add_row(); keep(row); c = row.cells[0].merge(row.cells[1]); c.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+                ok = add_photo(c, m["overall"][0], content_w - 0.3, 4.3, markers=m["markers"]); ofig = 0
+                if ok: ofig = fig; fig += 1
+                row = t.add_row(); row_h(row, 0.22); c = row.cells[0].merge(row.cells[1])
+                caption(c, f"Figure {ofig}: {name} {lbl} Overall - surveyed points {', '.join(k['key'] for k in m['markers'])}" if ofig else f"{name} {lbl} Overall (no photo)")
+                if (m.get("notes") or "").strip():
+                    row = t.add_row(); c = row.cells[0].merge(row.cells[1]); pp = c.paragraphs[0]; pp.paragraph_format.space_before = Pt(4)
+                    for k, line in enumerate(m["notes"].strip().splitlines()):
+                        if k: pp = c.add_paragraph()
+                        pp.add_run(line).font.size = Pt(11)
+            else:
+                row = t.add_row(); keep(row); row_h(row, photo_h + 0.15)
+                c = row.cells[0]; c.width = Inches(col_w); c.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+                ok = bool(m["overall"]) and add_photo(c, m["overall"][0], photo_w, photo_h); ofig = 0
+                if ok: ofig = fig; fig += 1
+                c = row.cells[1]; c.width = Inches(col_w); c.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
+                pp = c.paragraphs[0]; pp.paragraph_format.space_before = Pt(4)
+                for k, line in enumerate((m.get("notes") or "").strip().splitlines() or [""]):
+                    if k: pp = c.add_paragraph()
+                    pp.add_run(line).font.size = Pt(11)
+                row = t.add_row(); row_h(row, 0.22)
+                caption(row.cells[0], f"Figure {ofig}: {name} {lbl} Overall" if ofig else f"{name} {lbl} Overall (no photo)"); caption(row.cells[1], "Notes")
             extras = m["overall"][1:]
             for i in range(0, len(extras), 2):
                 row = t.add_row(); keep(row); crow = t.add_row(); row_h(crow, 0.22)

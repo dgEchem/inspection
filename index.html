@@ -124,6 +124,13 @@
   .surf .tiles2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; max-width: 760px; }
   @media (max-width: 560px) { .surf .tiles2 { grid-template-columns: 1fr; } .overall { grid-template-columns: 1fr; } }
   .readings { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 18px; }
+  .markers { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
+  .markers.arm { pointer-events: auto; cursor: crosshair; background: rgba(59,90,122,.12); outline: 3px solid #4fa3ff; outline-offset: -3px; }
+  .markers .mk { position: absolute; transform: translate(-50%, -50%); pointer-events: auto; width: 34px; height: 34px; border-radius: 50%;
+    background: #1e88e5; color: #fff; font-weight: 800; font-size: 18px; display: flex; align-items: center; justify-content: center;
+    border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.6); cursor: pointer; }
+  .markers .hint { position: absolute; left: 50%; top: 10px; transform: translateX(-50%); background: rgba(0,0,0,.7); color: #fff; font-size: 14px; padding: 4px 10px; border-radius: 8px; white-space: nowrap; }
+  .surf input.desc { font-size: 16px; margin-top: 4px; }
   .stat { font-size: 14px; color: var(--muted); margin-top: 4px; }
 </style>
 </head>
@@ -288,7 +295,7 @@
 
 <script>
 "use strict";
-const VERSION = "1.0.1";
+const VERSION = "1.1.0";
 document.getElementById("ver").textContent = VERSION;
 
 /* ======================================================================
@@ -311,6 +318,7 @@ const DEFAULT_TYPES = [
   "I-beam | I | A:Top flange, top; B:Top flange, underside left; C:Top flange, underside right; D:Web, left face; E:Web, right face; F:Bottom flange, top left; G:Bottom flange, top right; H:Bottom flange, underside",
   "L bracket | L | A:Vertical leg, outside; B:Vertical leg, inside; C:Horizontal leg, top; D:Horizontal leg, underside; E:End / edge",
   "C bracket | C | A:Back, outside; B:Back, inside; C:Top leg, top; D:Top leg, underside; E:Bottom leg, top; F:Bottom leg, underside",
+  "Marked on photo | M | (points are added by tapping the overall photo)",
   "Other | O | A:Surface A; B:Surface B; C:Surface C; D:Surface D; E:Surface E; F:Surface F; G:Surface G; H:Surface H",
 ].join("\n");
 
@@ -343,7 +351,7 @@ function numKey(v) { const n = parseInt(v, 10); return Number.isFinite(n) ? n : 
 function cmpMod(a, b) { return numKey(a.zone) - numKey(b.zone) || String(a.zone).localeCompare(String(b.zone)) || numKey(a.number) - numKey(b.number) || String(a.number).localeCompare(String(b.number)); }
 /** A part: zone = area, number = part number (field names kept so the export machinery is shared). */
 function newModillion(zone, number, type) {
-  return { id: uid(), zone, number, type: type || (typeList()[0] || {}).code || "I", overall: [], checked: [], surfaces: {}, notes: "", by: "", captured_at: "" };
+  return { id: uid(), zone, number, type: type || (typeList()[0] || {}).code || "I", overall: [], markers: [], checked: [], surfaces: {}, notes: "", by: "", captured_at: "" };
 }
 function newSurface() { return { photo: "", gauge: "", readings: "", notes: "", defects: [] }; }
 function uid() { return "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
@@ -353,14 +361,22 @@ function typeList() {
   const out = [];
   for (const line of String(project.settings.types || DEFAULT_TYPES).split("\n")) {
     const parts = line.split("|").map(x => x.trim()); if (parts.length < 3 || !parts[0]) continue;
-    const surfaces = parts[2].split(";").map(x => x.trim()).filter(Boolean).map(x => { const i = x.indexOf(":"); return i > 0 ? { key: x.slice(0, i).trim().toUpperCase(), desc: x.slice(i + 1).trim() } : { key: x.toUpperCase(), desc: "" }; });
-    out.push({ name: parts[0], code: parts[1].toUpperCase() || parts[0][0].toUpperCase(), surfaces });
+    const code = (parts[1] || "").toUpperCase() || parts[0][0].toUpperCase();
+    const surfaces = code === "M" ? [] : parts[2].split(";").map(x => x.trim()).filter(Boolean).map(x => { const i = x.indexOf(":"); return i > 0 ? { key: x.slice(0, i).trim().toUpperCase(), desc: x.slice(i + 1).trim() } : { key: x.toUpperCase(), desc: "" }; });
+    out.push({ name: parts[0], code, surfaces });
   }
   return out.length ? out : [{ name: "Other", code: "O", surfaces: "ABCDEFGH".split("").map(k => ({ key: k, desc: "Surface " + k })) }];
 }
 function typeOf(m) { const tl = typeList(); return tl.find(t => t.code === m.type) || tl[0]; }
-function surfDesc(m, key) { const t = typeOf(m); const sf = t.surfaces.find(x => x.key === key); return sf ? sf.desc : ""; }
-function checkedSurfaces(m) { const order = typeOf(m).surfaces.map(x => x.key); return [...(m.checked || [])].filter(k => order.includes(k)).sort((a, b) => order.indexOf(a) - order.indexOf(b)); }
+function isMarked(m) { return typeOf(m).code === "M"; }
+/** Surfaces available for a part: from the type's list, or - for "Marked on photo" - the points tapped on the overall photo. */
+function surfacesOf(m) {
+  if (isMarked(m)) return (m.markers || []).map(mk => ({ key: mk.key, desc: ((m.surfaces || {})[mk.key] || {}).desc || "" }));
+  return typeOf(m).surfaces;
+}
+function surfDesc(m, key) { const sf = surfacesOf(m).find(x => x.key === key); return sf ? sf.desc : ""; }
+function checkedSurfaces(m) { const order = surfacesOf(m).map(x => x.key); return [...(m.checked || [])].filter(k => order.includes(k)).sort((a, b) => order.indexOf(a) - order.indexOf(b)); }
+function nextMarkerKey(m) { const used = new Set((m.markers || []).map(k => k.key)); for (let i = 0; i < 26; i++) { const k = String.fromCharCode(65 + i); if (!used.has(k)) return k; } return "Z" + ((m.markers || []).length + 1); }
 function allPhotoIds(m) {
   const ids = [...(m.overall || [])];
   for (const k of Object.keys(m.surfaces || {})) { const sf = m.surfaces[k]; if (sf.photo) ids.push(sf.photo); if (sf.gauge) ids.push(sf.gauge); }
@@ -457,6 +473,20 @@ async function resizeBlob(blob, maxPx, q, rotate = 0) {
   if (!out) throw new Error("the browser could not encode the photo (out of memory?)");
   return { blob: out, w: c.width, h: c.height };
 }
+/** Draw lettered markers (normalised x/y) onto a photo. */
+async function annotate(blob, markers, q = 0.85) {
+  const im = await loadImage(blob);
+  const c = document.createElement("canvas"); c.width = im.naturalWidth; c.height = im.naturalHeight;
+  const ctx = c.getContext("2d"); ctx.drawImage(im, 0, 0);
+  const r = Math.max(14, Math.round(Math.min(c.width, c.height) * 0.032));
+  for (const mk of markers) {
+    const x = mk.x * c.width, y = mk.y * c.height;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fillStyle = "#1e88e5"; ctx.fill(); ctx.lineWidth = Math.max(2, r * 0.18); ctx.strokeStyle = "#fff"; ctx.stroke();
+    ctx.fillStyle = "#fff"; ctx.font = `bold ${Math.round(r * 1.25)}px -apple-system, Helvetica, Arial, sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(mk.key, x, y + r * 0.05);
+  }
+  const out = await canvasToBlob(c, q);
+  return { blob: out, w: c.width, h: c.height };
+}
 async function storePhotoFile(file) {
   const s = project.settings;
   const rec = await resizeBlob(file, +s.store_px || 1600, +s.jpeg_quality || 0.8);
@@ -486,7 +516,7 @@ async function loadState() {
   if (p) { project = p; project.settings = { ...DEFAULT_SETTINGS, ...(p.settings || {}) }; }
   const c = await DB.getKV("cur"); cur = Number.isInteger(c) ? c : 0;
   if (!project.modillions.length) project.modillions.push(newModillion("1", "1"));
-  for (const m of project.modillions) { m.overall = m.overall || []; m.checked = m.checked || []; m.surfaces = m.surfaces || {}; }
+  for (const m of project.modillions) { m.overall = m.overall || []; m.markers = m.markers || []; m.checked = m.checked || []; m.surfaces = m.surfaces || {}; }
   cur = Math.max(0, Math.min(cur, project.modillions.length - 1));
 }
 function save() {
@@ -590,7 +620,33 @@ async function renderCapture() {
 
   // overall photos: first one big, the rest as small thumbnails
   const main = $("overallMain"); main.innerHTML = "";
-  main.appendChild(await makeTile("Overall", () => m.overall[0] || "", id => { if (id) m.overall[0] = id; else m.overall.splice(0, 1); }, { cls: "big" }));
+  const bigTile = await makeTile("Overall", () => m.overall[0] || "", id => { if (id) m.overall[0] = id; else m.overall.splice(0, 1); }, { cls: "big" });
+  main.appendChild(bigTile);
+  if (isMarked(m) && m.overall[0]) {
+    const ov = document.createElement("div"); ov.className = "markers" + (markMode ? " arm" : "");
+    if (markMode) ov.innerHTML = `<div class="hint">Tap the photo where surface ${nextMarkerKey(m)} is</div>`;
+    for (const mk of m.markers) {
+      const el = document.createElement("div"); el.className = "mk"; el.textContent = mk.key; el.style.left = (mk.x * 100) + "%"; el.style.top = (mk.y * 100) + "%";
+      el.title = "Tap to remove";
+      el.onclick = async ev => { ev.stopPropagation(); if (markMode) return; await removeMarker(m, mk.key); };
+      ov.appendChild(el);
+    }
+    ov.onclick = ev => {
+      if (!markMode) return;
+      const r = ov.getBoundingClientRect(); const x = (ev.clientX - r.left) / r.width, y = (ev.clientY - r.top) / r.height;
+      if (x < 0 || x > 1 || y < 0 || y > 1) return;
+      const key = nextMarkerKey(m); m.markers.push({ key, x: +x.toFixed(4), y: +y.toFixed(4) });
+      m.checked.push(key); m.surfaces[key] = m.surfaces[key] || newSurface(); flushSave(); renderCapture();
+      toast(`Point ${key} added - tap again for the next one, or press Done`, 2500);
+    };
+    bigTile.appendChild(ov);
+    const bar = document.createElement("div"); bar.className = "row"; bar.style.marginTop = "8px";
+    bar.innerHTML = `<button class="btn ${markMode ? "primary" : ""}" id="btnMark">${markMode ? "Done adding points" : "Add point (tap on the photo)"}</button><span class="kbd">${m.markers.length ? "Tap a letter on the photo to remove it." : "Each point becomes a lettered section below."}</span>`;
+    bar.querySelector("#btnMark").onclick = () => { markMode = !markMode; renderCapture(); };
+    main.appendChild(bar);
+  } else if (isMarked(m)) {
+    const note = document.createElement("div"); note.className = "kbd"; note.style.marginTop = "8px"; note.textContent = "Take the overall photo first, then add lettered points on it."; main.appendChild(note);
+  }
   const ex = $("overallExtras"); ex.innerHTML = "";
   for (let i = 1; i < m.overall.length; i++) {
     const id = m.overall[i]; const d = document.createElement("div"); d.className = "mini";
@@ -611,7 +667,8 @@ async function renderCapture() {
   const t = typeOf(m);
   $("diagram").innerHTML = DIAGRAMS[t.code] || "";
   const chips = $("surfChips"); chips.innerHTML = "";
-  for (const sf of t.surfaces) {
+  if (isMarked(m)) chips.innerHTML = `<span class="muted">${m.markers.length ? "Points on the photo: " + m.markers.map(k => k.key).join(", ") : "No points yet - use \"Add point\" under the overall photo."}</span>`;
+  for (const sf of (isMarked(m) ? [] : t.surfaces)) {
     const on = (m.checked || []).includes(sf.key);
     const b = document.createElement("button"); b.className = "chip" + (on ? " on" : ""); b.innerHTML = `<b>${sf.key}</b>&nbsp; ${escAttr(sf.desc)}`;
     b.onclick = async () => {
@@ -632,7 +689,8 @@ async function renderCapture() {
   for (const key of checkedSurfaces(m)) {
     const sf = m.surfaces[key] = m.surfaces[key] || newSurface();
     const card = document.createElement("div"); card.className = "card surf";
-    card.innerHTML = `<h2 style="margin-top:0"><span class="badge">${key}</span><span>${escAttr(surfDesc(m, key))}</span></h2>
+    card.innerHTML = `<h2 style="margin-top:0"><span class="badge">${key}</span><span>${isMarked(m) ? "" : escAttr(surfDesc(m, key))}</span></h2>
+      ${isMarked(m) ? `<input type="text" class="desc" placeholder="Where is ${key}? e.g. north face, lower panel" value="${escAttr(sf.desc || "")}" data-k="desc">` : ""}
       <div class="tiles2"><div data-slot="photo"></div><div data-slot="gauge"></div></div>
       <label class="f">Thickness readings (${project.settings.units || "in"}) - type or paste; several separated by commas or spaces</label>
       <input type="text" class="readings" inputmode="decimal" placeholder="e.g. 0.512, 0.498, 0.505" value="${escAttr(sf.readings)}" data-k="readings">
@@ -643,6 +701,7 @@ async function renderCapture() {
     card.querySelector("[data-slot=gauge]").appendChild(await makeTile("Gauge screen (optional)", () => sf.gauge, id => { sf.gauge = id; }));
     const rd = card.querySelector("[data-k=readings]"); rd.oninput = () => { sf.readings = rd.value; card.querySelector("[data-k=stat]").textContent = readingsSummary(sf.readings); save(); };
     const nt = card.querySelector("[data-k=notes]"); nt.oninput = () => { sf.notes = nt.value; save(); };
+    const ds = card.querySelector("[data-k=desc]"); if (ds) ds.oninput = () => { sf.desc = ds.value; save(); };
     const ch = card.querySelector("[data-k=chips]");
     for (const df of defectList()) {
       const b = document.createElement("button"); b.className = "chip" + ((sf.defects || []).includes(df.label) ? " on" : ""); b.textContent = df.label;
@@ -659,6 +718,14 @@ async function renderCapture() {
 }
 function escAttr(s) { return String(s || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;"); }
 
+let markMode = false;
+async function removeMarker(m, key) {
+  const data = m.surfaces[key]; const has = data && (data.photo || data.gauge || data.readings || data.notes);
+  if (!(await confirmBox(`Remove point <b>${key}</b>${has ? " and its photo / readings / notes" : ""}?`, "Remove", true))) return;
+  m.markers = m.markers.filter(k => k.key !== key); m.checked = m.checked.filter(k => k !== key);
+  if (data) { for (const id of [data.photo, data.gauge]) if (id) { forgetURL(id); await DB.delPhoto(id); } delete m.surfaces[key]; }
+  flushSave(); renderCapture();
+}
 async function rotatePhoto(id) {
   const rec = await DB.getPhoto(id); if (!rec) return;
   const out = await resizeBlob(rec.blob, 1e6, +project.settings.jpeg_quality || 0.8, 90);
@@ -671,7 +738,8 @@ $("zone").onblur = e => { e.target.value = M().zone; };
 $("num").onblur = e => { e.target.value = M().number; };
 $("ptype").onchange = async e => {
   const m = M(); const nt = e.target.value; if (nt === m.type) return;
-  const keep = typeList().find(t => t.code === nt).surfaces.map(x => x.key);
+  const keep = nt === "M" ? (m.markers || []).map(k => k.key) : typeList().find(t => t.code === nt).surfaces.map(x => x.key);
+  markMode = false;
   const lost = (m.checked || []).filter(k => !keep.includes(k) && m.surfaces[k] && (m.surfaces[k].photo || m.surfaces[k].readings || m.surfaces[k].notes));
   if (lost.length && !(await confirmBox(`Changing the type drops surfaces ${lost.join(", ")} (they have photos or notes). Continue?`, "Change type", true))) { e.target.value = m.type; return; }
   for (const k of Object.keys(m.surfaces)) if (!keep.includes(k)) { for (const id of [m.surfaces[k].photo, m.surfaces[k].gauge]) if (id) { forgetURL(id); await DB.delPhoto(id); } delete m.surfaces[k]; }
@@ -703,9 +771,9 @@ $("btnNext").onclick = () => {
     if (isEmpty(m)) { toast("Take at least one photo of this one first"); return; }
     project.modillions.push(newModillion(m.zone, nextNumber(m.number), m.type));   // same area and type carried over
   }
-  cur++; flushSave(); renderCapture(); document.querySelector("main").scrollTop = 0;
+  cur++; markMode = false; flushSave(); renderCapture(); document.querySelector("main").scrollTop = 0;
 };
-$("btnPrev").onclick = () => { if (cur > 0) { cur--; save(); renderCapture(); document.querySelector("main").scrollTop = 0; } };
+$("btnPrev").onclick = () => { if (cur > 0) { cur--; markMode = false; save(); renderCapture(); document.querySelector("main").scrollTop = 0; } };
 $("btnDelete").onclick = async () => {
   const m = M();
   if (!(await confirmBox(`Delete <b>${label(m)}</b> and its photos?`, "Delete", true))) return;
@@ -1029,7 +1097,7 @@ async function exportZip(progress, items = null, partIndex = 0) {
     proj.zones[zone] = { description: z.description || "", image: partIndex === 0 ? await addPhoto(z.image, `${grpAbbr()}${zone}_layout.jpg`) : "", image_caption: z.image_caption || "" };
   }
   for (const { m } of items) {
-    const d = { zone: m.zone, number: m.number, type: m.type, overall: [], checked: checkedSurfaces(m), surfaces: {}, notes: m.notes, by: m.by || project.settings.operator || "", captured_at: m.captured_at || "" };
+    const d = { zone: m.zone, number: m.number, type: m.type, overall: [], markers: (m.markers || []).map(k => ({ ...k })), checked: checkedSurfaces(m), surfaces: {}, notes: m.notes, by: m.by || project.settings.operator || "", captured_at: m.captured_at || "" };
     for (let i = 0; i < m.overall.length; i++) { const p = await addPhoto(m.overall[i], niceName(m, i ? `Overall${i + 1}` : "Overall")); if (p) d.overall.push(p); }
     for (const key of d.checked) {
       const sf = m.surfaces[key] || newSurface();
@@ -1074,10 +1142,10 @@ async function importZip(file, progress) {
   for (const d of proj.modillions || []) {
     if (skipClashes && have.has(lbl(d))) continue;
     const m = newModillion(String(d.zone), String(d.number), d.type);
-    m.by = d.by || ""; m.captured_at = d.captured_at || ""; m.notes = d.notes || "";
+    m.by = d.by || ""; m.captured_at = d.captured_at || ""; m.notes = d.notes || ""; m.markers = (d.markers || []).map(k => ({ key: k.key, x: +k.x, y: +k.y }));
     for (const p of d.overall || []) { const id = await importPhoto(p); if (id) m.overall.push(id); }
     m.checked = [...(d.checked || Object.keys(d.surfaces || {}))];
-    for (const key of m.checked) { const sf = (d.surfaces || {})[key] || {}; m.surfaces[key] = { photo: await importPhoto(sf.photo), gauge: await importPhoto(sf.gauge), readings: sf.readings || "", notes: sf.notes || "", defects: sf.defects || [] }; }
+    for (const key of m.checked) { const sf = (d.surfaces || {})[key] || {}; m.surfaces[key] = { photo: await importPhoto(sf.photo), gauge: await importPhoto(sf.gauge), readings: sf.readings || "", notes: sf.notes || "", defects: sf.defects || [], desc: sf.desc || "" }; }
     project.modillions.push(m); n++; if (progress) progress(n, total, `Importing ${label(m)}...`);
   }
   if (!project.modillions.length) project.modillions.push(newModillion("1", "1"));
@@ -1134,17 +1202,18 @@ async function buildDocx(proj, zoneFilter, progress) {
   const groups = groupByZone().filter(([z]) => !zoneFilter || z === zoneFilter);
   const total = groups.reduce((a, [, items]) => a + items.length, 0) + 2; let done = 0;
 
-  async function addImage(id) {
+  async function addImage(id, markers = null) {
     const rec = await DB.getPhoto(id); if (!rec) return null;
     let { blob, w, h } = rec;
     if (Math.max(w, h) > reportPx) ({ blob, w, h } = await resizeBlob(blob, reportPx, q));
+    if (markers && markers.length) ({ blob, w, h } = await annotate(blob, markers, q));
     const rId = `rIdImg${media.length + 1}`; const fname = `image${media.length + 1}.jpg`;
     media.push({ name: fname, data: blob });
     rels.push(`<Relationship Id="${rId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${fname}"/>`);
     return { rId, w, h };
   }
-  async function photoPara(id, maxW, maxH, jc = "center") {
-    const im = await addImage(id); if (!im) return { xml: para(run("[photo missing]", { sz: 18, color: "C00000" }), { jc }), ok: false };
+  async function photoPara(id, maxW, maxH, jc = "center", markers = null) {
+    const im = await addImage(id, markers); if (!im) return { xml: para(run("[photo missing]", { sz: 18, color: "C00000" }), { jc }), ok: false };
     const [fw, fh] = fit(im.w, im.h, maxW, maxH);
     return { xml: para(drawing(im.rId, fw, fh, picId++), { jc, spacing: 'w:before="80" w:after="80"' }), ok: true };
   }
@@ -1194,11 +1263,18 @@ async function buildDocx(proj, zoneFilter, progress) {
       const lbl = label(m); const t = typeOf(m);
       const rows = [];
       rows.push(tr([tc(para(run(`${gname} ${m.zone}: `, { color: "FFFFFF", sz: 28 }) + run(`${name} ${m.number}`, { b: true, color: "FFFFFF", sz: 28 }) + run(`  (${t.name})`, { color: "FFFFFF", sz: 22 }), { jc: "center" }), { w: contentW, span: 2, fill: "808080", valign: "center" })], { h: 0.42 }));
-      // overall photo | general notes
-      const O = m.overall[0] ? await photoPara(m.overall[0], photoW, photoH) : { xml: "<w:p/>", ok: false };
+      // overall photo | general notes  (a marked-up photo gets the full width so the letters stay legible)
+      const marked = isMarked(m) && m.markers.length > 0 && m.overall[0];
+      const O = m.overall[0] ? await photoPara(m.overall[0], marked ? contentW - 0.3 : photoW, marked ? 4.3 : photoH, "center", isMarked(m) ? m.markers : null) : { xml: "<w:p/>", ok: false };
       let ofig = 0; if (O.ok) ofig = fig++;
-      rows.push(tr([tc(O.xml, { w: colW, valign: "center" }), tc(textParas(m.notes, { spacing: 'w:before="80"' }), { w: colW, valign: "top" })], { h: photoH + 0.15, cantSplit: true }));
-      rows.push(tr([tc(cap(ofig ? `Figure ${ofig}: ${name} ${lbl} Overall` : `${name} ${lbl} Overall (no photo)`), { w: colW }), tc(cap("Notes"), { w: colW })], { h: 0.22 }));
+      if (marked) {
+        rows.push(tr([tc(O.xml, { w: contentW, span: 2, valign: "center" })], { cantSplit: true }));
+        rows.push(tr([tc(cap(`Figure ${ofig}: ${name} ${lbl} Overall - surveyed points ${m.markers.map(k => k.key).join(", ")}`), { w: contentW, span: 2 })], { h: 0.22 }));
+        if ((m.notes || "").trim()) rows.push(tr([tc(textParas(m.notes, { spacing: 'w:before="80"' }), { w: contentW, span: 2, valign: "top" })], { h: 0.5 }));
+      } else {
+        rows.push(tr([tc(O.xml, { w: colW, valign: "center" }), tc(textParas(m.notes, { spacing: 'w:before="80"' }), { w: colW, valign: "top" })], { h: photoH + 0.15, cantSplit: true }));
+        rows.push(tr([tc(cap(ofig ? `Figure ${ofig}: ${name} ${lbl} Overall` : `${name} ${lbl} Overall (no photo)`), { w: colW }), tc(cap("Notes"), { w: colW })], { h: 0.22 }));
+      }
       // extra overall photos, two per row, small
       const extras = m.overall.slice(1);
       for (let i = 0; i < extras.length; i += 2) {

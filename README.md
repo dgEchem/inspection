@@ -1,6 +1,6 @@
 # Steel Member Survey (iPad app)
 
-Application for surveying steel members (I-beams,
+Sister app of the Modillion Field Report, for surveying steel members (I-beams,
 L brackets, C brackets) with photos, ultrasonic thickness readings and notes.
 Same hosting, install and backup story as the modillion app - see its README
 for GitHub Pages and "Add to Home Screen". It is a separate app with its own
@@ -13,10 +13,16 @@ Files:
 
 ## Capture tab
 
-* **Area** and **Part #**. Next keeps the
+* **Area** and **Part #** replace zone and modillion number. Next keeps the
   area and the part type and increments the number.
-* **Part type** dropdown (I-beam / L bracket / C bracket / Other). The lettered
-  diagram and the surface list come from the type.
+* **Part type** dropdown (I-beam / L bracket / C bracket / Marked on photo /
+  Other). For the first three the lettered diagram and the surface list come
+  from the type. **Marked on photo** is for irregular things (the Excalibur
+  monument): take the overall photo, tap *Add point*, then tap the photo where
+  each surveyed spot is - A, B, C... appear on the photo and a section opens
+  below for each, with a short "where is it" description for the caption. Tap
+  a letter on the photo to remove it. The report shows the overall photo with
+  the letters drawn on, full width.
 * **Overall photo** - the wide shot. The `+` adds more overall photos; extras
   stay as small thumbnails here and go in the report as a row of small photos
   under the main one.
@@ -29,12 +35,13 @@ Files:
   * **quick-pick defects** and **notes** for that surface.
 * **General notes** for the part at the bottom.
 
-Everything saves instantly (Report tab > Export project zip; big projects export in
+Everything saves instantly; the backup line and export rules are the same as
+the modillion app (Report tab > Export project zip; big projects export in
 numbered files).
 
 ## Report
 
-A page per part: grey header bar
+A page per part, same frame as the modillion report: grey header bar
 "Area 1: Part 3 (I-beam)", the overall photo with the general notes beside it,
 a row of small extra overall photos if any, then one row per surveyed surface
 with the surface photo on the left and, on the right, the thickness readings
