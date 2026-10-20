@@ -1,6 +1,6 @@
 # Steel Member Survey (iPad app)
 
-Sister app of the Modillion Field Report, for surveying steel members (I-beams,
+Application for surveying steel members (I-beams,
 L brackets, C brackets) with photos, ultrasonic thickness readings and notes.
 Same hosting, install and backup story as the modillion app - see its README
 for GitHub Pages and "Add to Home Screen". It is a separate app with its own
