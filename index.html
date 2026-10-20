@@ -295,7 +295,7 @@
 
 <script>
 "use strict";
-const VERSION = "1.1.1";
+const VERSION = "1.1.0";
 document.getElementById("ver").textContent = VERSION;
 
 /* ======================================================================
@@ -517,12 +517,6 @@ async function loadState() {
   const c = await DB.getKV("cur"); cur = Number.isInteger(c) ? c : 0;
   if (!project.modillions.length) project.modillions.push(newModillion("1", "1"));
   for (const m of project.modillions) { m.overall = m.overall || []; m.markers = m.markers || []; m.checked = m.checked || []; m.surfaces = m.surfaces || {}; }
-  // migration: projects saved before v1.1 carry a type list without "Marked on photo" - add it
-  if (!typeList().some(t => t.code === "M")) {
-    const lines = String(project.settings.types || "").split("\n"); const mline = DEFAULT_TYPES.split("\n").find(l => / \| M \| /.test(l));
-    const i = lines.findIndex(l => /\| *O *\|/.test(l)); if (i >= 0) lines.splice(i, 0, mline); else lines.push(mline);
-    project.settings.types = lines.join("\n"); save();
-  }
   cur = Math.max(0, Math.min(cur, project.modillions.length - 1));
 }
 function save() {
