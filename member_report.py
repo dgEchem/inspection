@@ -68,7 +68,7 @@ def photo_ids(m):
 
 def completeness(m):
     sfs = m.get("surfaces", {})
-    return (len(photo_ids(m)), sum(len((sf.get("readings") or "").strip()) + len((sf.get("notes") or "").strip()) for sf in sfs.values()) + len((m.get("notes") or "").strip()), len(sfs))
+    return (len(photo_ids(m)), sum(len(meas_of(sf)) * 5 + len((sf.get("notes") or "").strip()) for sf in sfs.values()) + len((m.get("notes") or "").strip()), len(sfs))
 
 
 # ----------------------------------------------------------------------------- merging
@@ -93,6 +93,7 @@ def merge(out_dir, inputs):
 
         def bring_in(m):
             m = dict(m); m["overall"] = [copy_in(p) for p in m.get("overall", []) if p]
+
             m["surfaces"] = {k: dict(sf, photo=copy_in(sf.get("photo")), gauge=copy_in(sf.get("gauge"))) for k, sf in m.get("surfaces", {}).items()}
             return m
 
@@ -121,9 +122,30 @@ def merge(out_dir, inputs):
 
 
 # ----------------------------------------------------------------------------- report
-def parse_readings(txt):
-    vals = [float(x) for x in re.findall(r"\d*\.?\d+", str(txt or ""))]
-    return vals
+def meas_of(sf):
+    """[{v, note, x, y}] - migrates the old free-text 'readings' field."""
+    if sf.get("meas") is None:
+        sf["meas"] = [{"v": x, "note": ""} for x in re.findall(r"\d*\.?\d+", str(sf.get("readings") or ""))]
+    return sf["meas"]
+
+
+def meas_vals(sf):
+    out = []
+    for x in meas_of(sf):
+        try: out.append(float(x.get("v")))
+        except (TypeError, ValueError): pass
+    return out
+
+
+def dec_for(u):
+    return 2 if u == "mm" else 0 if u == "mils" else 3
+
+
+def fmt(v, dec):
+    """Round half-up (same result as the iPad app's toFixed)."""
+    from decimal import Decimal, ROUND_HALF_UP
+    q = Decimal(1).scaleb(-dec)
+    return str(Decimal(repr(float(v))).quantize(q, rounding=ROUND_HALF_UP))
 
 
 def build(project_json, out_docx):
@@ -136,7 +158,7 @@ def build(project_json, out_docx):
 
     p = load_project(project_json) if not isinstance(project_json, dict) else project_json
     s = p["settings"]; name = s.get("element_name") or "Part"; gname = s.get("group_name") or "Area"; abbr = gname[0].upper()
-    units = s.get("units") or "in"; dec = 2 if units == "mm" else 3
+
     photo_w, photo_h = float(s.get("photo_w_in") or 3), float(s.get("photo_h_in") or 2)
     max_px = int(s.get("report_px") or s.get("store_px") or 1600)
     fig = int(s.get("figure_start") or 1)
@@ -189,7 +211,7 @@ def build(project_json, out_docx):
             except Exception: font = ImageFont.load_default()
         for mk in markers:
             x, y = float(mk["x"]) * im.width, float(mk["y"]) * im.height
-            d.ellipse([x - r, y - r, x + r, y + r], fill=(30, 136, 229), outline="white", width=max(2, int(r * 0.18)))
+            d.ellipse([x - r, y - r, x + r, y + r], fill=(230, 81, 0) if str(mk["key"])[:1].isdigit() else (30, 136, 229), outline="white", width=max(2, int(r * 0.18)))
             d.text((x, y), str(mk["key"]), fill="white", font=font, anchor="mm")
         out = os.path.join(tmp, f"ann_{abs(hash(path)) & 0xFFFFFFFF:08x}.jpg"); im.save(out, "JPEG", quality=92); return out, im.width, im.height
     def add_photo(cell, rel, mw, mh, align=WD_ALIGN_PARAGRAPH.CENTER, para=None, markers=None):
@@ -269,7 +291,7 @@ def build(project_json, out_docx):
             cp = doc.add_paragraph(); cp.alignment = WD_ALIGN_PARAGRAPH.CENTER; cp.add_run(f"Figure {fig}: {(zinfo.get('image_caption') or '').strip() or f'{gname} {z} layout.'}").font.size = Pt(9); fig += 1
         for m in [x for x in mods if x["zone"] == z]:
             doc.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
-            lbl = label(m, abbr)
+            lbl = label(m, abbr); units = m.get("units") or s.get("units") or "in"; dec = dec_for(units)
             t = doc.add_table(rows=0, cols=2); t.style = "Table Grid"; t.alignment = WD_TABLE_ALIGNMENT.CENTER; t.autofit = False
             row = t.add_row(); row_h(row, 0.42); hc = row.cells[0].merge(row.cells[1]); shade(hc, "808080"); hc.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
             pp = hc.paragraphs[0]; pp.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -312,14 +334,19 @@ def build(project_json, out_docx):
                 row = t.add_row(); keep(row); row_h(row, photo_h + 0.15)
                 c = row.cells[0]; c.width = Inches(col_w); c.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
                 pf = 0
-                if sf.get("photo") and add_photo(c, sf["photo"], photo_w, photo_h): pf = fig; fig += 1
+                ms = meas_of(sf); pts = [dict(x, key=str(i + 1)) for i, x in enumerate(ms) if x.get("x") is not None]
+                if sf.get("photo") and add_photo(c, sf["photo"], photo_w, photo_h, markers=pts or None): pf = fig; fig += 1
                 c = row.cells[1]; c.width = Inches(col_w); c.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
-                vals = parse_readings(sf.get("readings"))
+                vals = meas_vals(sf)
                 pp = c.paragraphs[0]; pp.paragraph_format.space_before = Pt(4)
-                if vals:
-                    r = pp.add_run("Thickness: "); r.bold = True; r.font.size = Pt(11)
-                    pp.add_run(", ".join(f"{v:.{dec}f}" for v in vals) + f" {units}").font.size = Pt(11)
-                    p2 = c.add_paragraph(); r = p2.add_run(f"Min {min(vals):.{dec}f} {units}" + (f", avg {sum(vals)/len(vals):.{dec}f} {units}" if len(vals) > 1 else "")); r.font.size = Pt(10); r.font.color.rgb = RGBColor(0x59, 0x59, 0x59)
+                if ms:
+                    r = pp.add_run(f"Thickness ({units}):"); r.bold = True; r.font.size = Pt(11)
+                    for i, x in enumerate(ms):
+                        try: vtxt = fmt(x.get('v'), dec)
+                        except (TypeError, ValueError): vtxt = str(x.get("v") or "-")
+                        q2 = c.add_paragraph(); q2.paragraph_format.space_after = Pt(0); q2.add_run(f"{i + 1}: {vtxt}" + (f"  ({x['note']})" if x.get("note") else "")).font.size = Pt(10)
+                    if vals:
+                        p2 = c.add_paragraph(); r = p2.add_run(f"Min {fmt(min(vals), dec)} {units}" + (f", avg {fmt(sum(vals)/len(vals), dec)} {units}" if len(vals) > 1 else "")); r.font.size = Pt(10); r.font.color.rgb = RGBColor(0x59, 0x59, 0x59)
                 else:
                     r = pp.add_run("Thickness: not measured"); r.font.size = Pt(10); r.font.color.rgb = RGBColor(0x80, 0x80, 0x80)
                 for line in (sf.get("notes") or "").strip().splitlines():

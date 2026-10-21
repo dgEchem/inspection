@@ -131,6 +131,21 @@
     border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.6); cursor: pointer; }
   .markers .hint { position: absolute; left: 50%; top: 10px; transform: translateX(-50%); background: rgba(0,0,0,.7); color: #fff; font-size: 14px; padding: 4px 10px; border-radius: 8px; white-space: nowrap; }
   .surf input.desc { font-size: 16px; margin-top: 4px; }
+  .meas { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+  .meas .no { width: 30px; height: 30px; border-radius: 50%; background: #e65100; color: #fff; font-weight: 700; display: flex; align-items: center; justify-content: center; flex: none; font-size: 15px; }
+  .meas input.val { width: 130px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 18px; text-align: right; }
+  .meas .unit { color: var(--muted); flex: none; }
+  .meas input.note { flex: 1; min-width: 120px; font-size: 15px; }
+  .meas button { flex: none; width: 40px; height: 40px; padding: 0; min-height: 40px; }
+  .meas button svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; }
+  .markers .mk.num { background: #e65100; width: 28px; height: 28px; font-size: 15px; }
+  .markers.arm.num { outline-color: #ff9800; background: rgba(230,81,0,.10); }
+  .diagram svg .reg { fill: #c9ced3; stroke: #666; stroke-width: 1.5; cursor: pointer; }
+  .diagram svg .reg.on { fill: #e53935; }
+  .diagram svg .reg:hover { stroke: #000; stroke-width: 2; }
+  .diagram svg text.lab { pointer-events: none; }
+  html.dark .diagram svg .reg { fill: #4a5058; stroke: #aab; } html.dark .diagram svg .reg.on { fill: #e53935; }
+  select.units { width: auto; font-size: 17px; padding: 8px 10px; }
   .stat { font-size: 14px; color: var(--muted); margin-top: 4px; }
 </style>
 </head>
@@ -149,6 +164,7 @@
         <div><label class="f" style="margin-top:0"><span id="grpName">Area</span></label><input class="short" type="text" inputmode="numeric" id="zone"></div>
         <div><label class="f" style="margin-top:0"><span id="elName">Part</span> #</label><input class="short" type="text" inputmode="numeric" id="num"></div>
         <div style="min-width:200px"><label class="f" style="margin-top:0">Part type</label><select id="ptype"></select></div>
+        <div><label class="f" style="margin-top:0">Units</label><select id="punits" class="units"><option value="in">in</option><option value="mm">mm</option><option value="mils">mils</option></select></div>
       </div>
       <div class="muted" id="posText"></div>
     </div>
@@ -164,7 +180,7 @@
   </div>
 
   <div class="card">
-    <label class="f" style="margin-top:0">Surfaces being surveyed - tap to select; a section opens below for each</label>
+    <label class="f" style="margin-top:0">Surfaces being surveyed - tap the diagram or the buttons; a section opens below for each</label>
     <div class="diagram"><div id="diagram"></div><div class="chips" id="surfChips" style="flex:1;margin:0"></div></div>
   </div>
 
@@ -252,7 +268,7 @@
     <div class="row">
       <div style="flex:1"><label class="f">Element name (Part)</label><input type="text" data-s="element_name"></div>
       <div style="flex:1"><label class="f">Group name (Area)</label><input type="text" data-s="group_name"></div>
-      <div style="flex:1"><label class="f">Thickness units</label><select data-s="units"><option value="in">in</option><option value="mm">mm</option></select></div>
+      <div style="flex:1"><label class="f">Default units for new parts</label><select data-s="units"><option value="in">in</option><option value="mm">mm</option><option value="mils">mils</option></select></div>
     </div>
     <div class="row">
       <div style="flex:1"><label class="f">Section number for area headings (3 &rarr; "3.1 Area 1:")</label><input type="text" data-s="section_number"></div>
@@ -295,7 +311,7 @@
 
 <script>
 "use strict";
-const VERSION = "1.1.0";
+const VERSION = "1.2.0";
 document.getElementById("ver").textContent = VERSION;
 
 /* ======================================================================
@@ -350,10 +366,26 @@ function normNum(v) { v = String(v || "").trim(); return /^\d+$/.test(v) ? Strin
 function numKey(v) { const n = parseInt(v, 10); return Number.isFinite(n) ? n : 1e9; }
 function cmpMod(a, b) { return numKey(a.zone) - numKey(b.zone) || String(a.zone).localeCompare(String(b.zone)) || numKey(a.number) - numKey(b.number) || String(a.number).localeCompare(String(b.number)); }
 /** A part: zone = area, number = part number (field names kept so the export machinery is shared). */
-function newModillion(zone, number, type) {
-  return { id: uid(), zone, number, type: type || (typeList()[0] || {}).code || "I", overall: [], markers: [], checked: [], surfaces: {}, notes: "", by: "", captured_at: "" };
+function newModillion(zone, number, type, units) {
+  return { id: uid(), zone, number, type: type || (typeList()[0] || {}).code || "I", units: units || project.settings.units || "in", overall: [], markers: [], checked: [], surfaces: {}, notes: "", by: "", captured_at: "" };
 }
-function newSurface() { return { photo: "", gauge: "", readings: "", notes: "", defects: [] }; }
+function newSurface() { return { photo: "", gauge: "", meas: [], notes: "", defects: [] }; }
+/** Measurements of a surface: [{v: "2.5", note: "", x, y}] (x/y = position on the surface photo, optional). */
+function measOf(sf) {
+  if (!sf.meas) {   // migrate the old free-text readings field
+    sf.meas = String(sf.readings || "").split(/[^0-9.]+/).filter(x => x && /^\d*\.?\d+$/.test(x)).map(v => ({ v, note: "" }));
+    delete sf.readings;
+  }
+  return sf.meas;
+}
+function measVals(sf) { return measOf(sf).map(x => parseFloat(x.v)).filter(Number.isFinite); }
+function unitsOf(m) { return m.units || project.settings.units || "in"; }
+function decFor(u) { return u === "mm" ? 2 : u === "mils" ? 0 : 3; }
+function measSummary(sf, u) {
+  const vals = measVals(sf); if (!vals.length) return "";
+  const d = decFor(u); const mn = Math.min(...vals), av = vals.reduce((a, b) => a + b, 0) / vals.length;
+  return `${vals.length} measurement${vals.length > 1 ? "s" : ""} - min ${mn.toFixed(d)} ${u}` + (vals.length > 1 ? `, avg ${av.toFixed(d)} ${u}` : "");
+}
 function uid() { return "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 
 /** Parse the part-type setting into [{name, code, surfaces:[{key, desc}]}]. */
@@ -382,28 +414,29 @@ function allPhotoIds(m) {
   for (const k of Object.keys(m.surfaces || {})) { const sf = m.surfaces[k]; if (sf.photo) ids.push(sf.photo); if (sf.gauge) ids.push(sf.gauge); }
   return ids;
 }
-/** Parse "0.512, 0.498 0.505" -> [0.512, 0.498, 0.505]; returns {vals, min, avg} */
-function parseReadings(txt) {
-  const vals = String(txt || "").split(/[^0-9.]+/).filter(x => x && /^\d*\.?\d+$/.test(x)).map(Number).filter(Number.isFinite);
-  if (!vals.length) return { vals: [], min: null, avg: null };
-  return { vals, min: Math.min(...vals), avg: vals.reduce((a, b) => a + b, 0) / vals.length };
-}
-function readingsSummary(txt) {
-  const r = parseReadings(txt); if (!r.vals.length) return "";
-  const u = project.settings.units || "in"; const d = u === "mm" ? 2 : 3;
-  return `${r.vals.length} reading${r.vals.length > 1 ? "s" : ""} - min ${r.min.toFixed(d)} ${u}` + (r.vals.length > 1 ? `, avg ${r.avg.toFixed(d)} ${u}` : "");
-}
 
 /* ---- diagrams for the fixed codes ---- */
+/* Clickable diagrams: each <rect class="reg" data-k="A"> toggles that surface. */
 const DIAGRAMS = {
-  I: `<svg viewBox="0 0 170 170"><line x1="30" y1="40" x2="140" y2="40"/><line x1="85" y1="40" x2="85" y2="130"/><line x1="30" y1="130" x2="140" y2="130"/>
-      <text x="85" y="28" text-anchor="middle">A</text><text x="62" y="62" text-anchor="middle">B</text><text x="108" y="62" text-anchor="middle">C</text>
-      <text x="66" y="92" text-anchor="middle">D</text><text x="104" y="92" text-anchor="middle">E</text><text x="62" y="122" text-anchor="middle">F</text><text x="108" y="122" text-anchor="middle">G</text>
-      <text x="85" y="155" text-anchor="middle">H</text></svg>`,
-  L: `<svg viewBox="0 0 170 170"><line x1="50" y1="30" x2="50" y2="130"/><line x1="50" y1="130" x2="140" y2="130"/>
-      <text x="32" y="80" text-anchor="middle">A</text><text x="68" y="80" text-anchor="middle">B</text><text x="100" y="120" text-anchor="middle">C</text><text x="100" y="152" text-anchor="middle">D</text><text x="150" y="135" text-anchor="middle">E</text></svg>`,
-  C: `<svg viewBox="0 0 170 170"><line x1="50" y1="35" x2="50" y2="135"/><line x1="50" y1="35" x2="140" y2="35"/><line x1="50" y1="135" x2="140" y2="135"/>
-      <text x="32" y="90" text-anchor="middle">A</text><text x="68" y="90" text-anchor="middle">B</text><text x="100" y="24" text-anchor="middle">C</text><text x="100" y="58" text-anchor="middle">D</text><text x="100" y="125" text-anchor="middle">E</text><text x="100" y="158" text-anchor="middle">F</text></svg>`,
+  I: `<svg viewBox="0 0 170 170">
+      <rect class="reg" data-k="A" x="25" y="22" width="120" height="12"/>
+      <rect class="reg" data-k="B" x="25" y="34" width="54" height="12"/><rect class="reg" data-k="C" x="91" y="34" width="54" height="12"/>
+      <rect class="reg" data-k="D" x="79" y="34" width="6" height="102"/><rect class="reg" data-k="E" x="85" y="34" width="6" height="102"/>
+      <rect class="reg" data-k="F" x="25" y="124" width="54" height="12"/><rect class="reg" data-k="G" x="91" y="124" width="54" height="12"/>
+      <rect class="reg" data-k="H" x="25" y="136" width="120" height="12"/>
+      <text class="lab" x="85" y="16" text-anchor="middle">A</text><text class="lab" x="52" y="60" text-anchor="middle">B</text><text class="lab" x="118" y="60" text-anchor="middle">C</text>
+      <text class="lab" x="66" y="90" text-anchor="middle">D</text><text class="lab" x="104" y="90" text-anchor="middle">E</text><text class="lab" x="52" y="118" text-anchor="middle">F</text><text class="lab" x="118" y="118" text-anchor="middle">G</text>
+      <text class="lab" x="85" y="164" text-anchor="middle">H</text></svg>`,
+  L: `<svg viewBox="0 0 170 170">
+      <rect class="reg" data-k="A" x="40" y="20" width="8" height="130"/><rect class="reg" data-k="B" x="48" y="20" width="8" height="122"/>
+      <rect class="reg" data-k="C" x="56" y="134" width="90" height="8"/><rect class="reg" data-k="D" x="48" y="142" width="98" height="8"/>
+      <rect class="reg" data-k="E" x="146" y="134" width="8" height="16"/>
+      <text class="lab" x="28" y="85" text-anchor="middle">A</text><text class="lab" x="70" y="85" text-anchor="middle">B</text><text class="lab" x="100" y="128" text-anchor="middle">C</text><text class="lab" x="100" y="164" text-anchor="middle">D</text><text class="lab" x="160" y="128" text-anchor="middle">E</text></svg>`,
+  C: `<svg viewBox="0 0 170 170">
+      <rect class="reg" data-k="A" x="40" y="25" width="8" height="120"/><rect class="reg" data-k="B" x="48" y="33" width="8" height="104"/>
+      <rect class="reg" data-k="C" x="48" y="25" width="98" height="8"/><rect class="reg" data-k="D" x="56" y="33" width="90" height="8"/>
+      <rect class="reg" data-k="E" x="56" y="129" width="90" height="8"/><rect class="reg" data-k="F" x="48" y="137" width="98" height="8"/>
+      <text class="lab" x="28" y="90" text-anchor="middle">A</text><text class="lab" x="70" y="90" text-anchor="middle">B</text><text class="lab" x="100" y="19" text-anchor="middle">C</text><text class="lab" x="100" y="56" text-anchor="middle">D</text><text class="lab" x="100" y="123" text-anchor="middle">E</text><text class="lab" x="100" y="160" text-anchor="middle">F</text></svg>`,
 };
 
 /* ======================================================================
@@ -481,7 +514,7 @@ async function annotate(blob, markers, q = 0.85) {
   const r = Math.max(14, Math.round(Math.min(c.width, c.height) * 0.032));
   for (const mk of markers) {
     const x = mk.x * c.width, y = mk.y * c.height;
-    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fillStyle = "#1e88e5"; ctx.fill(); ctx.lineWidth = Math.max(2, r * 0.18); ctx.strokeStyle = "#fff"; ctx.stroke();
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fillStyle = /^\d/.test(String(mk.key)) ? "#e65100" : "#1e88e5"; ctx.fill(); ctx.lineWidth = Math.max(2, r * 0.18); ctx.strokeStyle = "#fff"; ctx.stroke();
     ctx.fillStyle = "#fff"; ctx.font = `bold ${Math.round(r * 1.25)}px -apple-system, Helvetica, Arial, sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(mk.key, x, y + r * 0.05);
   }
   const out = await canvasToBlob(c, q);
@@ -516,7 +549,13 @@ async function loadState() {
   if (p) { project = p; project.settings = { ...DEFAULT_SETTINGS, ...(p.settings || {}) }; }
   const c = await DB.getKV("cur"); cur = Number.isInteger(c) ? c : 0;
   if (!project.modillions.length) project.modillions.push(newModillion("1", "1"));
-  for (const m of project.modillions) { m.overall = m.overall || []; m.markers = m.markers || []; m.checked = m.checked || []; m.surfaces = m.surfaces || {}; }
+  for (const m of project.modillions) { m.overall = m.overall || []; m.markers = m.markers || []; m.checked = m.checked || []; m.surfaces = m.surfaces || {}; m.units = m.units || project.settings.units || "in"; for (const sf of Object.values(m.surfaces)) measOf(sf); }
+  // migration: projects saved before v1.1 carry a type list without "Marked on photo" - add it
+  if (!typeList().some(t => t.code === "M")) {
+    const lines = String(project.settings.types || "").split("\n"); const mline = DEFAULT_TYPES.split("\n").find(l => / \| M \| /.test(l));
+    const i = lines.findIndex(l => /\| *O *\|/.test(l)); if (i >= 0) lines.splice(i, 0, mline); else lines.push(mline);
+    project.settings.types = lines.join("\n"); save();
+  }
   cur = Math.max(0, Math.min(cur, project.modillions.length - 1));
 }
 function save() {
@@ -617,6 +656,7 @@ async function renderCapture() {
   const sel = $("ptype"); sel.innerHTML = "";
   for (const t of typeList()) { const o = document.createElement("option"); o.value = t.code; o.textContent = t.name; sel.appendChild(o); }
   sel.value = typeOf(m).code;
+  $("punits").value = unitsOf(m);
 
   // overall photos: first one big, the rest as small thumbnails
   const main = $("overallMain"); main.innerHTML = "";
@@ -666,21 +706,13 @@ async function renderCapture() {
   // surface selector
   const t = typeOf(m);
   $("diagram").innerHTML = DIAGRAMS[t.code] || "";
+  $("diagram").querySelectorAll(".reg").forEach(r => { r.classList.toggle("on", (m.checked || []).includes(r.dataset.k)); r.onclick = () => toggleSurface(m, r.dataset.k); });
   const chips = $("surfChips"); chips.innerHTML = "";
   if (isMarked(m)) chips.innerHTML = `<span class="muted">${m.markers.length ? "Points on the photo: " + m.markers.map(k => k.key).join(", ") : "No points yet - use \"Add point\" under the overall photo."}</span>`;
   for (const sf of (isMarked(m) ? [] : t.surfaces)) {
     const on = (m.checked || []).includes(sf.key);
     const b = document.createElement("button"); b.className = "chip" + (on ? " on" : ""); b.innerHTML = `<b>${sf.key}</b>&nbsp; ${escAttr(sf.desc)}`;
-    b.onclick = async () => {
-      if (on) {
-        const data = m.surfaces[sf.key];
-        const has = data && (data.photo || data.gauge || data.readings || data.notes);
-        if (has && !(await confirmBox(`Surface <b>${sf.key}</b> has a photo, readings or notes. Un-select it and remove them?`, "Remove", true))) return;
-        m.checked = m.checked.filter(k => k !== sf.key);
-        if (data) { for (const id of [data.photo, data.gauge]) if (id) { forgetURL(id); await DB.delPhoto(id); } delete m.surfaces[sf.key]; }
-      } else { m.checked.push(sf.key); m.surfaces[sf.key] = m.surfaces[sf.key] || newSurface(); }
-      flushSave(); renderCapture();
-    };
+    b.onclick = () => toggleSurface(m, sf.key);
     chips.appendChild(b);
   }
 
@@ -692,14 +724,54 @@ async function renderCapture() {
     card.innerHTML = `<h2 style="margin-top:0"><span class="badge">${key}</span><span>${isMarked(m) ? "" : escAttr(surfDesc(m, key))}</span></h2>
       ${isMarked(m) ? `<input type="text" class="desc" placeholder="Where is ${key}? e.g. north face, lower panel" value="${escAttr(sf.desc || "")}" data-k="desc">` : ""}
       <div class="tiles2"><div data-slot="photo"></div><div data-slot="gauge"></div></div>
-      <label class="f">Thickness readings (${project.settings.units || "in"}) - type or paste; several separated by commas or spaces</label>
-      <input type="text" class="readings" inputmode="decimal" placeholder="e.g. 0.512, 0.498, 0.505" value="${escAttr(sf.readings)}" data-k="readings">
-      <div class="stat" data-k="stat">${readingsSummary(sf.readings)}</div>
+      <label class="f">Thickness measurements (${unitsOf(m)})</label>
+      <div data-k="meas"></div>
+      <div class="row" style="margin-top:8px">
+        <button class="btn" data-k="addMeas">+ Add measurement</button>
+        ${sf.photo ? `<button class="btn ${placeMode === key ? "primary" : ""}" data-k="place">${placeMode === key ? "Done placing" : "Place on photo"}</button>` : ""}
+      </div>
+      <div class="stat" data-k="stat">${measSummary(sf, unitsOf(m))}</div>
       <label class="f">Quick-pick defects</label><div class="chips" data-k="chips"></div>
       <label class="f">Notes for surface ${key}</label><textarea data-k="notes" style="min-height:70px">${escAttr(sf.notes)}</textarea>`;
-    card.querySelector("[data-slot=photo]").appendChild(await makeTile(`Surface ${key}`, () => sf.photo, id => { sf.photo = id; }));
+    const ptile = await makeTile(`Surface ${key}`, () => sf.photo, id => { sf.photo = id; });
+    card.querySelector("[data-slot=photo]").appendChild(ptile);
     card.querySelector("[data-slot=gauge]").appendChild(await makeTile("Gauge screen (optional)", () => sf.gauge, id => { sf.gauge = id; }));
-    const rd = card.querySelector("[data-k=readings]"); rd.oninput = () => { sf.readings = rd.value; card.querySelector("[data-k=stat]").textContent = readingsSummary(sf.readings); save(); };
+    // numbered measurement points on the surface photo
+    if (sf.photo) {
+      const ov = document.createElement("div"); ov.className = "markers num" + (placeMode === key ? " arm" : "");
+      if (placeMode === key) ov.innerHTML = `<div class="hint">Tap where measurement ${measOf(sf).length + 1} was taken</div>`;
+      measOf(sf).forEach((ms, i) => {
+        if (ms.x == null) return;
+        const el = document.createElement("div"); el.className = "mk num"; el.textContent = i + 1; el.style.left = (ms.x * 100) + "%"; el.style.top = (ms.y * 100) + "%";
+        el.title = "Measurement " + (i + 1); el.onclick = ev => { ev.stopPropagation(); const inp = card.querySelectorAll("[data-k=meas] input.val")[i]; if (inp) inp.focus(); };
+        ov.appendChild(el);
+      });
+      ov.onclick = ev => {
+        if (placeMode !== key) return;
+        const r = ov.getBoundingClientRect(); const x = (ev.clientX - r.left) / r.width, y = (ev.clientY - r.top) / r.height;
+        if (x < 0 || x > 1 || y < 0 || y > 1) return;
+        measOf(sf).push({ v: "", note: "", x: +x.toFixed(4), y: +y.toFixed(4) }); flushSave(); renderCapture();
+        setTimeout(() => { const inputs = document.querySelectorAll(`[data-surf="${key}"] input.val`); const last = inputs[inputs.length - 1]; if (last) last.focus(); }, 50);
+      };
+      ptile.appendChild(ov);
+    }
+    card.dataset.surf = key;
+    const renderMeas = () => {
+      const box = card.querySelector("[data-k=meas]"); box.innerHTML = "";
+      measOf(sf).forEach((ms, i) => {
+        const row = document.createElement("div"); row.className = "meas";
+        row.innerHTML = `<span class="no">${i + 1}</span><input class="val" type="text" inputmode="decimal" placeholder="0.000" value="${escAttr(ms.v)}"><span class="unit">${unitsOf(m)}</span>
+          <input class="note" type="text" placeholder="note (optional, e.g. near weld)" value="${escAttr(ms.note || "")}"><button class="btn" title="Remove">${ICON_X}</button>`;
+        row.querySelector(".val").oninput = e => { ms.v = e.target.value.trim(); card.querySelector("[data-k=stat]").textContent = measSummary(sf, unitsOf(m)); save(); };
+        row.querySelector(".note").oninput = e => { ms.note = e.target.value; save(); };
+        row.querySelector("button").onclick = async () => { if (ms.v && !(await confirmBox(`Remove measurement ${i + 1} (${ms.v} ${unitsOf(m)})?`, "Remove", true))) return; measOf(sf).splice(i, 1); flushSave(); renderCapture(); };
+        box.appendChild(row);
+      });
+      if (!measOf(sf).length) box.innerHTML = `<div class="kbd">No measurements yet. "Add measurement" adds a box; "Place on photo" lets you tap the surface photo where each reading was taken.</div>`;
+    };
+    renderMeas();
+    card.querySelector("[data-k=addMeas]").onclick = () => { measOf(sf).push({ v: "", note: "" }); flushSave(); renderMeas(); const inputs = card.querySelectorAll("input.val"); inputs[inputs.length - 1].focus(); };
+    const pl = card.querySelector("[data-k=place]"); if (pl) pl.onclick = () => { placeMode = placeMode === key ? null : key; markMode = false; renderCapture(); };
     const nt = card.querySelector("[data-k=notes]"); nt.oninput = () => { sf.notes = nt.value; save(); };
     const ds = card.querySelector("[data-k=desc]"); if (ds) ds.oninput = () => { sf.desc = ds.value; save(); };
     const ch = card.querySelector("[data-k=chips]");
@@ -718,10 +790,21 @@ async function renderCapture() {
 }
 function escAttr(s) { return String(s || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;"); }
 
+async function toggleSurface(m, key) {
+  if ((m.checked || []).includes(key)) {
+    const data = m.surfaces[key];
+    const has = data && (data.photo || data.gauge || measOf(data).length || data.notes);
+    if (has && !(await confirmBox(`Surface <b>${key}</b> has a photo, measurements or notes. Un-select it and remove them?`, "Remove", true))) return;
+    m.checked = m.checked.filter(k => k !== key);
+    if (data) { for (const id of [data.photo, data.gauge]) if (id) { forgetURL(id); await DB.delPhoto(id); } delete m.surfaces[key]; }
+  } else { m.checked.push(key); m.surfaces[key] = m.surfaces[key] || newSurface(); }
+  flushSave(); renderCapture();
+}
 let markMode = false;
+let placeMode = null;   // surface key whose photo is in "place measurement" mode
 async function removeMarker(m, key) {
-  const data = m.surfaces[key]; const has = data && (data.photo || data.gauge || data.readings || data.notes);
-  if (!(await confirmBox(`Remove point <b>${key}</b>${has ? " and its photo / readings / notes" : ""}?`, "Remove", true))) return;
+  const data = m.surfaces[key]; const has = data && (data.photo || data.gauge || measOf(data).length || data.notes);
+  if (!(await confirmBox(`Remove point <b>${key}</b>${has ? " and its photo / measurements / notes" : ""}?`, "Remove", true))) return;
   m.markers = m.markers.filter(k => k.key !== key); m.checked = m.checked.filter(k => k !== key);
   if (data) { for (const id of [data.photo, data.gauge]) if (id) { forgetURL(id); await DB.delPhoto(id); } delete m.surfaces[key]; }
   flushSave(); renderCapture();
@@ -736,11 +819,12 @@ $("zone").oninput = e => { M().zone = normNum(e.target.value); save(); renderHea
 $("num").oninput = e => { M().number = normNum(e.target.value); save(); renderHeaderOnly(); checkDuplicate(); };
 $("zone").onblur = e => { e.target.value = M().zone; };
 $("num").onblur = e => { e.target.value = M().number; };
+$("punits").onchange = e => { M().units = e.target.value; save(); renderCapture(); };
 $("ptype").onchange = async e => {
   const m = M(); const nt = e.target.value; if (nt === m.type) return;
   const keep = nt === "M" ? (m.markers || []).map(k => k.key) : typeList().find(t => t.code === nt).surfaces.map(x => x.key);
-  markMode = false;
-  const lost = (m.checked || []).filter(k => !keep.includes(k) && m.surfaces[k] && (m.surfaces[k].photo || m.surfaces[k].readings || m.surfaces[k].notes));
+  markMode = false; placeMode = null;
+  const lost = (m.checked || []).filter(k => !keep.includes(k) && m.surfaces[k] && (m.surfaces[k].photo || measOf(m.surfaces[k]).length || m.surfaces[k].notes));
   if (lost.length && !(await confirmBox(`Changing the type drops surfaces ${lost.join(", ")} (they have photos or notes). Continue?`, "Change type", true))) { e.target.value = m.type; return; }
   for (const k of Object.keys(m.surfaces)) if (!keep.includes(k)) { for (const id of [m.surfaces[k].photo, m.surfaces[k].gauge]) if (id) { forgetURL(id); await DB.delPhoto(id); } delete m.surfaces[k]; }
   m.checked = (m.checked || []).filter(k => keep.includes(k)); m.type = nt; flushSave(); renderCapture();
@@ -764,16 +848,16 @@ function renderHeaderOnly() { const m = M(); $("hdrTitle").textContent = `${proj
 $("notes").oninput = e => { M().notes = e.target.value; save(); };
 
 function nextNumber(n) { const v = parseInt(n, 10); return Number.isFinite(v) ? String(v + 1) : n; }
-function isEmpty(m) { return !allPhotoIds(m).length && !m.notes.trim() && !Object.values(m.surfaces || {}).some(sf => sf.readings || sf.notes); }
+function isEmpty(m) { return !allPhotoIds(m).length && !m.notes.trim() && !Object.values(m.surfaces || {}).some(sf => measOf(sf).length || sf.notes); }
 $("btnNext").onclick = () => {
   if (cur === project.modillions.length - 1) {
     const m = M();
     if (isEmpty(m)) { toast("Take at least one photo of this one first"); return; }
-    project.modillions.push(newModillion(m.zone, nextNumber(m.number), m.type));   // same area and type carried over
+    project.modillions.push(newModillion(m.zone, nextNumber(m.number), m.type, m.units));   // area, type and units carried over
   }
-  cur++; markMode = false; flushSave(); renderCapture(); document.querySelector("main").scrollTop = 0;
+  cur++; markMode = false; placeMode = null; flushSave(); renderCapture(); document.querySelector("main").scrollTop = 0;
 };
-$("btnPrev").onclick = () => { if (cur > 0) { cur--; markMode = false; save(); renderCapture(); document.querySelector("main").scrollTop = 0; } };
+$("btnPrev").onclick = () => { if (cur > 0) { cur--; markMode = false; placeMode = null; save(); renderCapture(); document.querySelector("main").scrollTop = 0; } };
 $("btnDelete").onclick = async () => {
   const m = M();
   if (!(await confirmBox(`Delete <b>${label(m)}</b> and its photos?`, "Delete", true))) return;
@@ -1097,11 +1181,11 @@ async function exportZip(progress, items = null, partIndex = 0) {
     proj.zones[zone] = { description: z.description || "", image: partIndex === 0 ? await addPhoto(z.image, `${grpAbbr()}${zone}_layout.jpg`) : "", image_caption: z.image_caption || "" };
   }
   for (const { m } of items) {
-    const d = { zone: m.zone, number: m.number, type: m.type, overall: [], markers: (m.markers || []).map(k => ({ ...k })), checked: checkedSurfaces(m), surfaces: {}, notes: m.notes, by: m.by || project.settings.operator || "", captured_at: m.captured_at || "" };
+    const d = { zone: m.zone, number: m.number, type: m.type, units: unitsOf(m), overall: [], markers: (m.markers || []).map(k => ({ ...k })), checked: checkedSurfaces(m), surfaces: {}, notes: m.notes, by: m.by || project.settings.operator || "", captured_at: m.captured_at || "" };
     for (let i = 0; i < m.overall.length; i++) { const p = await addPhoto(m.overall[i], niceName(m, i ? `Overall${i + 1}` : "Overall")); if (p) d.overall.push(p); }
     for (const key of d.checked) {
       const sf = m.surfaces[key] || newSurface();
-      d.surfaces[key] = { photo: await addPhoto(sf.photo, niceName(m, key)), gauge: await addPhoto(sf.gauge, niceName(m, key + "_gauge")), readings: sf.readings || "", notes: sf.notes || "", defects: [...(sf.defects || [])], desc: surfDesc(m, key) };
+      d.surfaces[key] = { photo: await addPhoto(sf.photo, niceName(m, key)), gauge: await addPhoto(sf.gauge, niceName(m, key + "_gauge")), meas: measOf(sf).map(x => ({ ...x })), notes: sf.notes || "", defects: [...(sf.defects || [])], desc: surfDesc(m, key) };
     }
     proj.modillions.push(d); count++; if (progress) progress(count, total + 1, `Packing ${label(m)}...`);
   }
@@ -1141,11 +1225,11 @@ async function importZip(file, progress) {
   }
   for (const d of proj.modillions || []) {
     if (skipClashes && have.has(lbl(d))) continue;
-    const m = newModillion(String(d.zone), String(d.number), d.type);
+    const m = newModillion(String(d.zone), String(d.number), d.type, d.units);
     m.by = d.by || ""; m.captured_at = d.captured_at || ""; m.notes = d.notes || ""; m.markers = (d.markers || []).map(k => ({ key: k.key, x: +k.x, y: +k.y }));
     for (const p of d.overall || []) { const id = await importPhoto(p); if (id) m.overall.push(id); }
     m.checked = [...(d.checked || Object.keys(d.surfaces || {}))];
-    for (const key of m.checked) { const sf = (d.surfaces || {})[key] || {}; m.surfaces[key] = { photo: await importPhoto(sf.photo), gauge: await importPhoto(sf.gauge), readings: sf.readings || "", notes: sf.notes || "", defects: sf.defects || [], desc: sf.desc || "" }; }
+    for (const key of m.checked) { const sf = (d.surfaces || {})[key] || {}; m.surfaces[key] = { photo: await importPhoto(sf.photo), gauge: await importPhoto(sf.gauge), meas: sf.meas ? sf.meas.map(x => ({ ...x })) : undefined, readings: sf.readings || "", notes: sf.notes || "", defects: sf.defects || [], desc: sf.desc || "" }; measOf(m.surfaces[key]); }
     project.modillions.push(m); n++; if (progress) progress(n, total, `Importing ${label(m)}...`);
   }
   if (!project.modillions.length) project.modillions.push(newModillion("1", "1"));
@@ -1196,7 +1280,6 @@ async function buildDocx(proj, zoneFilter, progress) {
   const contentW = 6.5, colW = 3.25;
   const photoW = +s.photo_w_in || 3, photoH = +s.photo_h_in || 2;
   const reportPx = +s.report_px || 1600, q = +s.jpeg_quality || 0.8;
-  const units = s.units || "in"; const dec = units === "mm" ? 2 : 3;
   let fig = parseInt(s.figure_start, 10) || 1;
   const media = []; const rels = []; let picId = 1;
   const groups = groupByZone().filter(([z]) => !zoneFilter || z === zoneFilter);
@@ -1260,7 +1343,7 @@ async function buildDocx(proj, zoneFilter, progress) {
     }
     for (const { m } of items) {
       body.push(pageBreak());
-      const lbl = label(m); const t = typeOf(m);
+      const lbl = label(m); const t = typeOf(m); const units = unitsOf(m); const dec = decFor(units);
       const rows = [];
       rows.push(tr([tc(para(run(`${gname} ${m.zone}: `, { color: "FFFFFF", sz: 28 }) + run(`${name} ${m.number}`, { b: true, color: "FFFFFF", sz: 28 }) + run(`  (${t.name})`, { color: "FFFFFF", sz: 22 }), { jc: "center" }), { w: contentW, span: 2, fill: "808080", valign: "center" })], { h: 0.42 }));
       // overall photo | general notes  (a marked-up photo gets the full width so the letters stay legible)
@@ -1286,13 +1369,15 @@ async function buildDocx(proj, zoneFilter, progress) {
       // one row per surveyed surface: photo | readings + notes (+ gauge photo)
       for (const key of checkedSurfaces(m)) {
         const sf = m.surfaces[key] || newSurface(); const desc = surfDesc(m, key);
-        const P = sf.photo ? await photoPara(sf.photo, photoW, photoH) : { xml: "<w:p/>", ok: false };
+        const ms = measOf(sf); const pts = ms.map((x, i) => ({ ...x, key: String(i + 1) })).filter(x => x.x != null);
+        const P = sf.photo ? await photoPara(sf.photo, photoW, photoH, "center", pts.length ? pts : null) : { xml: "<w:p/>", ok: false };
         let pf = 0; if (P.ok) pf = fig++;
         let right = "";
-        const r = parseReadings(sf.readings);
-        if (r.vals.length) {
-          right += para(run("Thickness: ", { b: true, sz: 22 }) + run(r.vals.map(v => v.toFixed(dec)).join(", ") + ` ${units}`, { sz: 22 }), { spacing: 'w:before="80"' });
-          right += para(run(`Min ${r.min.toFixed(dec)} ${units}` + (r.vals.length > 1 ? `, avg ${r.avg.toFixed(dec)} ${units}` : ""), { sz: 20, color: "595959" }), { spacing: 'w:after="80"' });
+        const vals = measVals(sf);
+        if (ms.length) {
+          right += para(run(`Thickness (${units}):`, { b: true, sz: 22 }), { spacing: 'w:before="80" w:after="20"' });
+          ms.forEach((x, i) => { const v = parseFloat(x.v); right += para(run(`${i + 1}: ${Number.isFinite(v) ? v.toFixed(dec) : (x.v || "-")}` + (x.note ? `  (${x.note})` : ""), { sz: 20 }), { spacing: 'w:after="0"' }); });
+          if (vals.length) right += para(run(`Min ${Math.min(...vals).toFixed(dec)} ${units}` + (vals.length > 1 ? `, avg ${(vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(dec)} ${units}` : ""), { sz: 20, color: "595959" }), { spacing: 'w:before="40" w:after="80"' });
         } else right += para(run("Thickness: not measured", { sz: 20, color: "808080" }), { spacing: 'w:before="80" w:after="80"' });
         if ((sf.notes || "").trim()) right += textParas(sf.notes);
         if (sf.gauge) { const G = await photoPara(sf.gauge, 2.2, 1.5, "left"); if (G.ok) { right += G.xml + para(run(`Figure ${fig++}: Gauge reading, surface ${key}`, { sz: 16, color: "595959" }), { jc: "left" }); } }
