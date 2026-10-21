@@ -311,7 +311,7 @@
 
 <script>
 "use strict";
-const VERSION = "1.2.0";
+const VERSION = "1.2.4";
 document.getElementById("ver").textContent = VERSION;
 
 /* ======================================================================
@@ -525,6 +525,9 @@ async function storePhotoFile(file) {
   const rec = await resizeBlob(file, +s.store_px || 1600, +s.jpeg_quality || 0.8);
   const id = uid() + ".jpg";
   await DB.putPhoto(id, rec);
+  // read it straight back: the photo only counts as taken once storage has handed it back intact
+  const chk = await DB.getPhoto(id);
+  if (!chk || !chk.blob || chk.blob.size !== rec.blob.size) { try { await DB.delPhoto(id); } catch (_) { } throw new Error("the photo did not read back from storage - take it again"); }
   return id;
 }
 const urlCache = new Map();
@@ -954,7 +957,14 @@ async function renderExport() {
   try {
     if (navigator.storage && navigator.storage.estimate) {
       const e = await navigator.storage.estimate();
-      $("storageInfo").textContent = `Photos stored on this iPad: ${(e.usage / 1048576).toFixed(0)} MB` + (e.quota ? ` of ~${(e.quota / 1073741824).toFixed(1)} GB available` : "") + (project.last_export ? `. Last backup: ${new Date(project.last_export).toLocaleString()}` : ". No backup exported yet.");
+      const withPhotos = project.modillions.filter(m => allPhotoIds(m).length); const nPhotos = withPhotos.reduce((a, m) => a + allPhotoIds(m).length, 0);
+      let est = "";
+      if (e.quota && withPhotos.length && e.usage > 0) {
+        const perPart = e.usage / withPhotos.length, left = Math.max(0, e.quota - e.usage) / perPart;
+        const fmtN = n => n >= 1000 ? (Math.round(n / 100) * 100).toLocaleString() : String(Math.floor(n));
+        est = ` - about ${perPart >= 1048576 ? (perPart / 1048576).toFixed(1) + " MB" : (perPart / 1024).toFixed(0) + " KB"} per ${elName().toLowerCase()} so far (${withPhotos.length} with photos, ${(nPhotos / withPhotos.length).toFixed(1)} photos each), room for roughly ${fmtN(left)} more`;
+      }
+      $("storageInfo").textContent = `Photos stored on this iPad: ${(e.usage / 1048576).toFixed(0)} MB` + (e.quota ? ` of ~${(e.quota / 1073741824).toFixed(1)} GB available` : "") + est + (project.last_export ? `. Last backup: ${new Date(project.last_export).toLocaleString()}` : ". No backup exported yet.");
       if (e.quota && e.usage / e.quota > 0.8) toast("Storage is getting full - export and start a new project soon", 5000);
     }
   } catch (_) { }
@@ -970,7 +980,7 @@ $("btnGen").onclick = async () => {
     const name = buildFileName([project.settings.project_name || "Steel_Survey", contentTag(scope === "all" ? null : scope)], ".docx");
     lastDoc = { blob, name };
     $("genInfo").textContent = `${name} - ${(blob.size / 1048576).toFixed(1)} MB, built in ${((Date.now() - t0) / 1000).toFixed(0)} s.`;
-    $("genResult").style.display = "block"; $("genMsg").textContent = "Done.";
+    $("genResult").style.display = "block"; $("genMsg").textContent = "Done."; $("genBar").style.width = "100%";
   } catch (e) { console.error(e); $("genMsg").textContent = "Error: " + (e.message || e); }
   $("btnGen").disabled = false;
 };
@@ -1041,7 +1051,8 @@ async function buildExportPart() {
     const sub = { modillions: items.map(it => it.m) };
     const tag = (() => { const save = project.modillions; try { project.modillions = sub.modillions; return contentTag(null); } finally { project.modillions = save; } })();
     const name = buildFileName([project.settings.project_name || "Steel_Survey", tag + (n > 1 ? `_file${i + 1}of${n}` : ""), (project.settings.operator || "iPad").slice(0, 15), st.stamp], ".zip");
-    st.blob = blob; st.name = name;
+    st.blob = blob; st.name = name; $("zipBar").style.width = "100%";
+    if (lastExportMissing.length) await confirmBox(`<b>Warning: ${lastExportMissing.length} photo(s) could not be read from this iPad's storage and are not in the zip:</b><br>${lastExportMissing.slice(0, 20).join(", ")}${lastExportMissing.length > 20 ? "..." : ""}<br><br>Everything else was exported. Re-take those photos if you still can.`, "OK");
     $("zipMsg").textContent = `${name} - ${(blob.size / 1048576).toFixed(1)} MB ready.` + (n > 1 ? ` Save it, then the next part is built.` : "");
     const row = document.createElement("div"); row.className = "row"; row.style.marginTop = "8px";
     row.innerHTML = `<button class="btn primary" id="btnSavePart">Share / Save ${n > 1 ? `file ${i + 1} of ${n}` : "project zip"}...</button><button class="btn" id="btnDlPart">Download</button>`;
@@ -1060,13 +1071,14 @@ $("importZip").onchange = async e => {
   const f = e.target.files[0]; e.target.value = ""; if (!f) return;
   $("zipProg").style.display = "block";
   try {
-    const n = await importZip(f, (d, t, msg) => { $("zipBar").style.width = (100 * d / t) + "%"; $("zipMsg").textContent = msg; });
+    const n = await importZip(f, (d, t, msg) => { $("zipBar").style.width = (100 * d / t) + "%"; $("zipMsg").textContent = msg; }); $("zipBar").style.width = "100%";
     $("zipMsg").textContent = `Imported ${n} ${elName().toLowerCase()}s.`; save(); renderExport(); renderCapture();
   } catch (err) { $("zipMsg").textContent = "Import failed: " + (err.message || err); }
 };
 $("btnClear").onclick = async () => {
   const n = project.modillions.filter(m => allPhotoIds(m).length).length;
-  if (!(await confirmBox(`<b>Erase the whole project (${n} ${elName().toLowerCase()}s with photos) from this iPad?</b><br>Export a project zip first if you want to keep it.<br><br>Type <b>ERASE</b> to confirm:<br><input type="text" id="eraseWord" autocapitalize="characters" style="margin-top:6px">`, "Erase everything", true))) return;
+  const unsaved = project.last_export ? Math.max(0, photoCount() - (project.last_export_photos || 0)) : photoCount();
+  if (!(await confirmBox(`<b>Erase the whole project (${n} ${elName().toLowerCase()}s with photos) from this iPad?</b><br>${unsaved ? `<b style="color:#b00020">${unsaved} photo${unsaved > 1 ? "s have" : " has"} NOT been exported since the last backup.</b> ` : "All photos are in the last export. "}Export a project zip first if you want to keep it.<br><br>Type <b>ERASE</b> to confirm:<br><input type="text" id="eraseWord" autocapitalize="characters" style="margin-top:6px">`, "Erase everything", true))) return;
   if (((document.getElementById("overlayBox").querySelector("#eraseWord") || {}).value || "").trim().toUpperCase() !== "ERASE") { toast("Not erased - you did not type ERASE", 3000); return; }
   await DB.clearPhotos(); urlCache.forEach(u => URL.revokeObjectURL(u)); urlCache.clear();
   project = newProject(); project.modillions.push(newModillion("1", "1")); cur = 0; save(); lastDoc = null;
@@ -1151,6 +1163,7 @@ async function readZip(blob) {
 /* ======================================================================
    Project zip export / import (compatible with the desktop tool)
    ====================================================================== */
+let lastExportMissing = [];
 function niceName(m, suffix) { return `${label(m)}_${suffix}.jpg`.replace(/[^\w\-.]+/g, "_"); }
 /** Split the project into export parts of at most `maxPhotos` photos each (whole parts, in
  *  area/number order). Every file is a complete project zip; files never overlap. */
@@ -1169,10 +1182,10 @@ function exportParts(maxPhotos) {
 async function exportZip(progress, items = null, partIndex = 0) {
   items = items || groupByZone().flatMap(([, its]) => its);
   const entries = []; const proj = { kind: "member", photo_dir: "photos", settings: { ...project.settings }, zones: {}, modillions: [], type_list: typeList(), defect_list: defectList() };
-  const used = new Set(); let count = 0;
+  const used = new Set(); let count = 0; lastExportMissing = [];
   const addPhoto = async (id, name) => {
     if (!id) return ""; let n = name, k = 1; while (used.has(n)) n = name.replace(/\.jpg$/, `_${++k}.jpg`); used.add(n);
-    const rec = await DB.getPhoto(id); if (!rec) return "";
+    const rec = await DB.getPhoto(id); if (!rec || !rec.blob) { lastExportMissing.push(n.replace(/\.jpg$/, "")); return ""; }
     entries.push({ name: "photos/" + n, data: rec.blob, compress: false }); return n;   // Blob by reference - no copy
   };
   const total = items.length;
@@ -1201,9 +1214,10 @@ async function importZip(file, progress) {
   if (proj.kind !== "member") throw new Error("That zip is not a Steel Member Survey export");
   const dir = "photos/";
   const byName = new Map(files.map(f => [f.name, f]));
+  const importMissing = [];
   const importPhoto = async rel => {
     if (!rel) return ""; const f = byName.get(base + dir + rel) || byName.get(base + rel) || byName.get(dir + rel) || files.find(x => x.name.endsWith("/" + rel) || x.name === rel);
-    if (!f) return ""; const id = uid() + ".jpg";
+    if (!f) { importMissing.push(rel); return ""; } const id = uid() + ".jpg";
     const blob = new Blob([f.data], { type: "image/jpeg" });
     let rec;
     try { const im = await loadImage(blob); rec = { blob, w: im.naturalWidth, h: im.naturalHeight }; }
@@ -1234,6 +1248,7 @@ async function importZip(file, progress) {
   }
   if (!project.modillions.length) project.modillions.push(newModillion("1", "1"));
   cur = Math.min(cur, project.modillions.length - 1);
+  if (importMissing.length) await confirmBox(`<b>Warning: ${importMissing.length} photo(s) listed in that zip's project.json were not inside the zip:</b><br>${importMissing.slice(0, 20).join(", ")}${importMissing.length > 20 ? "..." : ""}<br><br>The ${elName().toLowerCase()}s were imported without them.`, "OK");
   return n;
 }
 
