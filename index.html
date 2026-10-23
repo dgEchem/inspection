@@ -94,6 +94,16 @@
   .toast { position: fixed; left: 50%; bottom: calc(var(--safe-b) + 70px); transform: translateX(-50%); background: #222; color: #fff;
     padding: 10px 16px; border-radius: 10px; font-size: 15px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 9; max-width: 90vw; }
   .toast.show { opacity: .95; }
+  .toast.act { pointer-events: auto; display: flex; align-items: center; }
+  .toast button { margin-left: 14px; background: none; border: 0; color: #ffd54f; font: inherit; font-weight: 700; padding: 8px 4px; text-transform: uppercase; letter-spacing: .5px; cursor: pointer; }
+  header .hbtn { flex: none; width: 40px; height: 40px; border: 0; background: rgba(255,255,255,.16); color: #fff; border-radius: 10px; display: flex; align-items: center; justify-content: center; padding: 0; cursor: pointer; }
+  header .hbtn:disabled { opacity: .35; }
+  header .hbtn svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .hist { max-height: 55vh; overflow: auto; }
+  .hrow { display: flex; align-items: center; gap: 10px; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .hrow small { color: var(--muted); }
+  .hrow.bad .lbl { color: var(--red); }
+  .hrow .btn { min-height: 38px; padding: 6px 12px; font-size: 14px; flex: none; }
   h2 { font-size: 20px; margin: 4px 0 10px; }
   h3 { font-size: 16px; margin: 12px 0 6px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
   details summary { cursor: pointer; font-weight: 600; padding: 6px 0; }
@@ -156,6 +166,9 @@
 <header>
   <h1 id="hdrTitle">Steel Member Survey</h1>
   <span class="pos" id="hdrPos"></span>
+  <button class="hbtn" id="btnUndo" title="Undo" aria-label="Undo" disabled><svg viewBox="0 0 24 24"><path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button>
+  <button class="hbtn" id="btnRedo" title="Redo" aria-label="Redo" disabled><svg viewBox="0 0 24 24"><path d="M15 14l5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg></button>
+  <button class="hbtn" id="btnHist" title="Recent changes" aria-label="Recent changes"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></button>
 </header>
 
 <main>
@@ -243,7 +256,7 @@
 
   <h2>Project backup / transfer</h2>
   <div class="card">
-    <p class="muted" style="margin-top:0">A zip with all photos and a <code>project.json</code>. Can be merged on the PC (member_report.py) or imported on another iPad to combine several people's areas into one report.</p>
+    <p class="muted" style="margin-top:0">A zip with all photos and a <code>project.json</code>. Can be merged on the PC (inspection_report_app.py) or imported on another iPad to combine several people's areas into one report.</p>
     <div class="row">
       <button class="btn" id="btnExportZip">Export project zip</button>
       <label class="btn" style="position:relative;overflow:hidden;display:inline-block">Import zip (merge)
@@ -265,7 +278,7 @@
   <h2>Settings</h2>
   <div class="card" id="settingsForm">
     <label class="f" style="margin-top:0">Project / building name (used for file names)</label><input type="text" data-s="project_name">
-    <label class="f">Your name or initials (stamped on exports and on each modillion you capture)</label><input type="text" data-s="operator">
+    <label class="f">Your name or initials (stamped on exports and on each part you capture)</label><input type="text" data-s="operator">
     <label class="f"><input type="checkbox" data-s="dark_mode"> Dark mode (easier on the eyes at night)</label>
     <label class="f">Footer text (e.g. Report C15010 - April 2015)</label><input type="text" data-s="report_id">
     <div class="row">
@@ -314,7 +327,7 @@
 
 <script>
 "use strict";
-const VERSION = "1.2.5";
+const VERSION = "1.3.0";
 document.getElementById("ver").textContent = VERSION;
 
 /* ======================================================================
@@ -475,7 +488,8 @@ const DB = (() => {
   return {
     getPhoto: id => tx("photos", "readonly", s => s.get(id)).then(fromStored),
     putPhoto: async (id, rec) => { const st = await toStored(rec); return tx("photos", "readwrite", s => s.put(st, id)); },
-    delPhoto: id => tx("photos", "readwrite", s => s.delete(id)),
+    delPhotoNow: id => tx("photos", "readwrite", s => s.delete(id)),
+    delPhoto: id => trashPhoto(id),     // soft delete: see "Undo / redo" below
     allPhotoKeys: () => tx("photos", "readonly", s => s.getAllKeys()),
     clearPhotos: () => tx("photos", "readwrite", s => s.clear()),
     getKV: k => tx("kv", "readonly", s => s.get(k)),
@@ -563,12 +577,24 @@ async function loadState() {
     project.settings.types = lines.join("\n"); save();
   }
   cur = Math.max(0, Math.min(cur, project.modillions.length - 1));
+  try {
+    const h = await DB.getKV("history");
+    if (h && h.v === 1) {
+      const ok = e => e && Array.isArray(e.changes) && e.changes.length && typeof e.label === "string";
+      undoStack = (h.undo || []).filter(ok); redoStack = (h.redo || []).filter(ok); trashSet = new Set(h.trash || []);
+    }
+  } catch (e) { console.error("history restore", e); }
+  resetShadow(); histReady = true; if (trashSet.size) schedulePurge(8000);
 }
 function save() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(flushSave, 150);
 }
-function flushSave() { clearTimeout(saveTimer); saveTimer = null; DB.putKV("project", project); DB.putKV("cur", cur); }
+function flushSave() {
+  clearTimeout(saveTimer); saveTimer = null;
+  try { recordHistory(); } catch (e) { console.error("history", e); }   // never let history trouble block saving
+  DB.putKV("project", project); DB.putKV("cur", cur);
+}
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden" && saveTimer) flushSave(); });
 window.addEventListener("pagehide", () => { if (saveTimer) flushSave(); });
 function M() { return project.modillions[cur]; }
@@ -583,10 +609,251 @@ function defectList() {
 }
 
 /* ======================================================================
+   Undo / redo (whole app)
+   ----------------------------------------------------------------------
+   Every save compares each part (and the area texts) with the copy kept from the previous save; a
+   difference becomes one history entry holding the "before" image, so ANY change can be undone -
+   un-selecting a surface, deleting a measurement, replacing a photo, deleting a part, an import...
+   Typing is merged into one entry per burst. Photos are never deleted straight away: DB.delPhoto only
+   marks them, and they are really deleted once no history entry can bring them back. The history is
+   kept in IndexedDB, so it survives closing the app.
+   ====================================================================== */
+let HIST_MAX = 600; const HIST_CHARS = 8e6, COALESCE_MS = 3000, COALESCE_SPAN = 20000;
+let undoStack = [], redoStack = [], trashSet = new Set();
+let shadow = new Map(), shadowIdx = new Map(), shadowZones = "{}", shadowRefs = new Set();
+let histReady = false, histApplying = false, histTimer = null, purgeTimer = null, histChain = Promise.resolve();
+function withHist(fn) { const p = histChain.then(fn); histChain = p.catch(() => { }); return p; }
+
+function normalizePart(m) {   // idempotent clean-up that rendering would otherwise do later (keeps history free of phantom changes)
+  m.overall = m.overall || []; m.markers = m.markers || []; m.checked = m.checked || []; m.surfaces = m.surfaces || {};
+  for (const k of m.checked) if (!m.surfaces[k]) m.surfaces[k] = newSurface();
+  for (const sf of Object.values(m.surfaces)) measOf(sf);
+}
+function zonesCanon() {
+  const o = {}; for (const k of Object.keys(project.zones || {}).sort()) { const z = project.zones[k]; if (z && (z.description || z.image || z.image_caption)) o[k] = z; }
+  return JSON.stringify(o);
+}
+function resetShadow() {
+  shadow = new Map(); shadowIdx = new Map(); shadowRefs = new Set();
+  project.modillions.forEach((m, i) => { if (!m.id) m.id = uid(); normalizePart(m); shadow.set(m.id, JSON.stringify(m)); shadowIdx.set(m.id, i); for (const id of allPhotoIds(m)) shadowRefs.add(id); });
+  shadowZones = zonesCanon(); for (const z of Object.values(JSON.parse(shadowZones))) if (z.image) shadowRefs.add(z.image);
+}
+function skeleton(p) {   // everything except free text: if this differs, the change is a discrete action, never merged with typing
+  const sf = {}; for (const k of Object.keys(p.surfaces || {}).sort()) { const s = p.surfaces[k] || {}; sf[k] = [s.photo || "", s.gauge || "", (s.defects || []).join("|"), (s.meas || []).map(x => x.x == null ? "-" : x.x + "," + x.y).join(";")]; }
+  return JSON.stringify([p.type, p.units, p.overall, p.markers, p.checked, sf]);
+}
+function zonesSkel(js) { try { return JSON.stringify(Object.entries(JSON.parse(js)).map(([k, z]) => [k, z && z.image])); } catch (_) { return js; } }
+function describePart(b, a) {
+  const out = [], bad = []; let surf = "";
+  const add = (t, destructive = false, s = "") => { out.push(t); if (destructive) bad.push(t); if (!surf && s) surf = s; };
+  const tn = code => (typeList().find(t => t.code === code) || {}).name || code;
+  if (b.type !== a.type) add(`changed type to ${tn(a.type)}`, true);
+  if ((b.units || "") !== (a.units || "")) add(`changed units to ${a.units}`);
+  const bs = b.surfaces || {}, as = a.surfaces || {}, bc = b.checked || [], ac = a.checked || [];
+  for (const k of bc) if (!ac.includes(k)) {
+    const s = bs[k] || {}, n = (s.meas || []).length;
+    const bits = [s.photo ? "photo" : "", n ? `${n} measurement${n > 1 ? "s" : ""}` : "", (s.notes || "").trim() ? "notes" : ""].filter(Boolean).join(", ");
+    add(`removed surface ${k}` + (bits ? ` (${bits})` : ""), true, k);
+  }
+  for (const k of ac) if (!bc.includes(k)) add(`added surface ${k}`, false, k);
+  const bm = (b.markers || []).length, am = (a.markers || []).length;
+  if (am > bm) add("added point"); else if (am < bm) add("removed point", true);
+  const bo = b.overall || [], ao = a.overall || [];
+  if (ao.length > bo.length) add("added overall photo"); else if (ao.length < bo.length) add("removed overall photo", true);
+  else if (bo.join() !== ao.join()) add("replaced overall photo", true);
+  for (const k of ac) if (bc.includes(k)) {
+    const s0 = bs[k] || {}, s1 = as[k] || {};
+    for (const [f, nf] of [["photo", "photo"], ["gauge", "gauge photo"]]) {
+      if (s0[f] && !s1[f]) add(`removed ${nf} (surface ${k})`, true, k);
+      else if (!s0[f] && s1[f]) add(`added ${nf} (surface ${k})`, false, k);
+      else if ((s0[f] || "") !== (s1[f] || "")) add(`retook ${nf} (surface ${k})`, true, k);
+    }
+    const m0 = s0.meas || [], m1 = s1.meas || [];
+    if (m1.length > m0.length) add(`added measurement ${m1.length} (surface ${k})`, false, k);
+    else if (m1.length < m0.length) add(`removed measurement (surface ${k})`, true, k);
+    else if (m0.map(x => x.x + "," + x.y).join(";") !== m1.map(x => x.x + "," + x.y).join(";")) add(`placed/moved a measurement point (surface ${k})`, false, k);
+    if ((s0.defects || []).join("|") !== (s1.defects || []).join("|")) add(`defects changed (surface ${k})`, false, k);
+  }
+  if (!out.length) add("edited text");
+  return { text: `${grpAbbr()}${a.zone}-${a.number}: ${out.slice(0, 3).join("; ")}`, destructive: bad.length > 0, surf };
+}
+function describeChanges(changes, cmap) {
+  const nm = p => `${grpAbbr()}${p.zone}-${p.number}`;
+  const removed = [], added = [], edited = []; let zone = false;
+  for (const c of changes) {
+    if (c.id === "__zones__") { zone = true; continue; }
+    const a = cmap.get(c.id);
+    if (c.before === null) added.push(a);
+    else if (!a) { const b = JSON.parse(c.before); if (!(isEmpty(b) && changes.length > 1)) removed.push(b); }   // swapping the blank starter part for imported ones is not a "deletion"
+    else edited.push([JSON.parse(c.before), a]);
+  }
+  if (removed.length) {
+    const ph = removed.reduce((n, p) => n + allPhotoIds(p).length, 0);
+    return { text: `Deleted ${removed.slice(0, 3).map(nm).join(", ")}${removed.length > 3 ? ` +${removed.length - 3} more` : ""}` + (ph ? ` (${ph} photo${ph > 1 ? "s" : ""})` : ""), destructive: true, surf: "" };
+  }
+  if (added.length) return { text: added.length === 1 ? `Added ${nm(added[0])}` : `Added ${added.length} ${elName().toLowerCase()}s`, destructive: false, surf: "" };
+  if (edited.length === 1) return describePart(edited[0][0], edited[0][1]);
+  if (edited.length > 1) return { text: `Edited ${edited.length} ${elName().toLowerCase()}s`, destructive: false, surf: "" };
+  return { text: zone ? `Edited ${grpName().toLowerCase()} text or drawing` : "Edited", destructive: false, surf: "" };
+}
+function idsFromBefore(c) {
+  if (!c.before) return [];
+  try { const p = JSON.parse(c.before); return c.id === "__zones__" ? Object.values(p || {}).map(z => z && z.image).filter(Boolean) : allPhotoIds(p); } catch (_) { return []; }
+}
+function entryRefs(e) { if (!e.refs) { e.refs = []; for (const c of e.changes) e.refs.push(...idsFromBefore(c)); } return e.refs; }
+function entrySize(e) { if (e.size == null) e.size = e.changes.reduce((n, c) => n + (c.before ? c.before.length : 0), 0); return e.size; }
+
+function recordHistory() {
+  if (!histReady || histApplying) return;
+  const parts = project.modillions, next = new Map(), nextIdx = new Map(), cmap = new Map(), refs = new Set(), changes = [];
+  parts.forEach((m, i) => { if (!m.id) m.id = uid(); normalizePart(m); next.set(m.id, JSON.stringify(m)); nextIdx.set(m.id, i); cmap.set(m.id, m); for (const id of allPhotoIds(m)) refs.add(id); });
+  for (const [id, js] of shadow) if (!next.has(id)) changes.push({ id, idx: shadowIdx.get(id) || 0, before: js });
+  for (const [id, js] of next) { const prev = shadow.get(id); if (prev === undefined) changes.push({ id, idx: nextIdx.get(id), before: null }); else if (prev !== js) changes.push({ id, idx: nextIdx.get(id), before: prev }); }
+  const zj = zonesCanon(), zPrev = shadowZones;
+  if (zj !== zPrev) changes.push({ id: "__zones__", idx: 0, before: zPrev });
+  for (const z of Object.values(JSON.parse(zj))) if (z.image) refs.add(z.image);
+  shadow = next; shadowIdx = nextIdx; shadowZones = zj; shadowRefs = refs;
+  if (!changes.length) return;
+  if (redoStack.length) { dropEntries(redoStack); redoStack = []; }
+  const now = Date.now(), only = changes.length === 1 ? changes[0] : null;
+  let textOnly = false;
+  if (only && only.before !== null) {
+    if (only.id === "__zones__") textOnly = zonesSkel(only.before) === zonesSkel(zj);
+    else if (cmap.get(only.id)) textOnly = skeleton(JSON.parse(only.before)) === skeleton(cmap.get(only.id));
+  }
+  const last = undoStack[undoStack.length - 1];
+  if (textOnly && last && last.textOnly && last.changes.length === 1 && last.changes[0].id === only.id && now - last.t < COALESCE_MS && now - last.t0 < COALESCE_SPAN) { last.t = now; refreshHistoryUI(); return; }
+  const d = describeChanges(changes, cmap);
+  undoStack.push({ t: now, t0: now, label: d.text, destructive: d.destructive, textOnly, surf: d.surf, changes });
+  trimHistory(); persistHistorySoon(); refreshHistoryUI();
+  if (d.destructive) toast(d.text, 7000, { label: "Undo", fn: () => stepHistory("undo", 1) });
+}
+function trimHistory() {
+  let total = undoStack.reduce((n, e) => n + entrySize(e), 0); const dropped = [];
+  while (undoStack.length > HIST_MAX || (total > HIST_CHARS && undoStack.length > 1)) { const e = undoStack.shift(); total -= entrySize(e); dropped.push(e); }
+  if (dropped.length) dropEntries(dropped);
+}
+function dropEntries(list) { for (const e of list) for (const id of entryRefs(e)) trashSet.add(id); if (list.length) { persistHistorySoon(); schedulePurge(); } }
+
+/* ---- photo trash: only photos the app itself deleted are ever purged, and only when nothing can restore them ---- */
+function trashPhoto(id) { if (id) { trashSet.add(id); persistHistorySoon(); schedulePurge(); } return Promise.resolve(); }
+function schedulePurge(ms = 4000) { clearTimeout(purgeTimer); purgeTimer = setTimeout(() => { purgeTimer = null; purgeTrash(); }, ms); }
+function referencedPhotoIds() {
+  const ref = new Set(shadowRefs);
+  for (const m of project.modillions) for (const id of allPhotoIds(m)) ref.add(id);
+  for (const z of Object.values(project.zones || {})) if (z && z.image) ref.add(z.image);
+  for (const e of undoStack) for (const id of entryRefs(e)) ref.add(id);
+  for (const e of redoStack) for (const id of entryRefs(e)) ref.add(id);
+  return ref;
+}
+function purgeTrash() {
+  return withHist(async () => {
+    if (!trashSet.size) return;
+    if (saveTimer) flushSave();
+    await persistHistory();                      // the saved history must already know about every entry before anything is deleted
+    const ref = referencedPhotoIds(); let n = 0;
+    for (const id of [...trashSet]) {
+      if (ref.has(id)) continue;                 // still restorable (or live): keep
+      forgetURL(id);
+      try { await DB.delPhotoNow(id); trashSet.delete(id); n++; } catch (e) { console.error(e); }
+    }
+    if (n) persistHistorySoon();
+  });
+}
+
+/* ---- persistence ---- */
+function persistHistorySoon() { clearTimeout(histTimer); histTimer = setTimeout(persistHistory, 600); }
+async function persistHistory() {
+  clearTimeout(histTimer); histTimer = null;
+  const strip = e => ({ t: e.t, t0: e.t0, label: e.label, destructive: !!e.destructive, textOnly: !!e.textOnly, surf: e.surf || "", changes: e.changes });
+  try { await DB.putKV("history", { v: 1, undo: undoStack.map(strip), redo: redoStack.map(strip), trash: [...trashSet] }); } catch (e) { console.error("history save", e); }
+}
+function clearHistory() { undoStack = []; redoStack = []; trashSet = new Set(); resetShadow(); persistHistory(); refreshHistoryUI(); }
+
+/* ---- stepping ---- */
+function applyEntry(entry, dir, keys) {
+  const inverse = { t: Date.now(), t0: Date.now(), label: entry.label, destructive: false, textOnly: false, surf: entry.surf || "", changes: [] };
+  const idxNow = new Map(project.modillions.map((m, i) => [m.id, i]));
+  let focusId = null, zonesOnly = true, missing = 0;
+  const rem = entry.changes.filter(c => c.before === null && c.id !== "__zones__");
+  const put = entry.changes.filter(c => c.before !== null).sort((x, y) => x.idx - y.idx);
+  for (const c of rem) {
+    const i = idxNow.get(c.id); zonesOnly = false;
+    inverse.changes.push({ id: c.id, idx: i != null ? i : c.idx, before: i != null ? JSON.stringify(project.modillions[i]) : null });
+  }
+  if (rem.length) { const gone = new Set(rem.map(c => c.id)); project.modillions = project.modillions.filter(m => !gone.has(m.id)); }
+  for (const c of put) {
+    if (c.id === "__zones__") { inverse.changes.push({ id: c.id, idx: 0, before: zonesCanon() }); project.zones = JSON.parse(c.before); continue; }
+    zonesOnly = false;
+    const i = project.modillions.findIndex(m => m.id === c.id), p = JSON.parse(c.before);
+    for (const pid of allPhotoIds(p)) if (!keys.has(pid)) missing++;
+    inverse.changes.push({ id: c.id, idx: i >= 0 ? i : c.idx, before: i >= 0 ? JSON.stringify(project.modillions[i]) : null });
+    if (i >= 0) project.modillions[i] = p; else project.modillions.splice(Math.min(c.idx, project.modillions.length), 0, p);
+    focusId = c.id;
+  }
+  (dir === "undo" ? redoStack : undoStack).push(inverse);
+  return { focusId, zonesOnly, missing, surf: entry.surf || "" };
+}
+function stepHistory(dir, n = 1) { return withHist(() => doStep(dir, n)); }
+async function doStep(dir, n) {
+  flushSave();                                   // typing still waiting for its save becomes its own entry first
+  const from = () => dir === "undo" ? undoStack : redoStack;
+  if (!from().length) { toast(dir === "undo" ? "Nothing to undo" : "Nothing to redo"); return; }
+  const keys = new Set(await DB.allPhotoKeys());
+  const backup = JSON.stringify({ parts: project.modillions, zones: project.zones });
+  const popped = []; let res = null, missing = 0; const labels = [];
+  histApplying = true;
+  try {
+    while (labels.length < n && from().length) { const e = from().pop(); popped.push(e); res = applyEntry(e, dir, keys); missing += res.missing; labels.push(e.label); }
+    if (!project.modillions.length) project.modillions.push(newModillion("1", "1"));
+    for (const m of project.modillions) normalizePart(m);
+    resetShadow();
+  } catch (err) {                                // restore everything exactly as it was
+    console.error("history step failed", err);
+    const b = JSON.parse(backup); project.modillions = b.parts; project.zones = b.zones;
+    for (let i = 0; i < popped.length; i++) { (dir === "undo" ? redoStack : undoStack).pop(); }
+    for (const e of popped.reverse()) from().push(e);
+    resetShadow(); histApplying = false; refreshHistoryUI(); toast("Could not " + dir + " - nothing was changed", 4000); return;
+  } finally { histApplying = false; }
+  const fi = res.focusId ? project.modillions.findIndex(m => m.id === res.focusId) : -1;
+  cur = fi >= 0 ? fi : Math.max(0, Math.min(cur, project.modillions.length - 1));
+  markMode = false; placeMode = null;
+  flushSave(); persistHistorySoon(); refreshHistoryUI();
+  if (res.zonesOnly) showScreen("zones");
+  else { showScreen("capture"); await renderCapture(); const sc = res.surf && document.querySelector(`[data-surf="${res.surf}"]`); if (sc) sc.scrollIntoView({ block: "center" }); }
+  const other = dir === "undo" ? "redo" : "undo", verb = dir === "undo" ? "Undid" : "Redid";
+  toast((labels.length > 1 ? `${verb} ${labels.length} changes` : `${verb}: ${labels[0]}`) + (missing ? ` - ${missing} photo${missing > 1 ? "s" : ""} could not be recovered` : ""), missing ? 7000 : 5000,
+    { label: other === "redo" ? "Redo" : "Undo", fn: () => stepHistory(other, labels.length) });
+}
+function refreshHistoryUI() {
+  try {
+    const u = $("btnUndo"), r = $("btnRedo"); if (!u) return;
+    u.disabled = !undoStack.length; r.disabled = !redoStack.length;
+    u.title = undoStack.length ? "Undo: " + undoStack[undoStack.length - 1].label : "Nothing to undo";
+    r.title = redoStack.length ? "Redo: " + redoStack[redoStack.length - 1].label : "Nothing to redo";
+  } catch (_) { }
+}
+function showHistory() {
+  const box = $("overlayBox"), rows = undoStack.slice(-40).reverse();
+  const ago = t => { const s = Math.max(0, (Date.now() - t) / 1000); return s < 60 ? "just now" : s < 3600 ? Math.round(s / 60) + " min ago" : s < 86400 ? Math.round(s / 3600) + " h ago" : Math.round(s / 86400) + " d ago"; };
+  box.innerHTML = `<h2 style="margin-top:0">Recent changes</h2>` +
+    (rows.length ? `<div class="hist">` + rows.map((e, i) => `<div class="hrow${e.destructive ? " bad" : ""}"><div><div class="lbl">${escAttr(e.label)}</div><small>${ago(e.t)}</small></div><button class="btn" data-n="${i + 1}">Undo to here</button></div>`).join("") + `</div>` : `<div class="kbd">Nothing to undo yet.</div>`) +
+    (redoStack.length ? `<div class="kbd" style="margin-top:8px">${redoStack.length} undone step${redoStack.length > 1 ? "s" : ""} can be redone with the redo button.</div>` : "") +
+    `<div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn" id="hClose">Close</button></div>`;
+  $("overlay").classList.add("show");
+  $("hClose").onclick = () => $("overlay").classList.remove("show");
+  box.querySelectorAll("[data-n]").forEach(b => b.onclick = () => { $("overlay").classList.remove("show"); stepHistory("undo", +b.dataset.n); });
+}
+
+/* ======================================================================
    UI plumbing
    ====================================================================== */
 const $ = id => document.getElementById(id);
-function toast(msg, ms = 1800) { const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove("show"), ms); }
+function toast(msg, ms = 1800, action = null) {
+  const t = $("toast"); t.textContent = msg; t.classList.toggle("act", !!action);
+  if (action) { const b = document.createElement("button"); b.textContent = action.label; b.onclick = () => { t.classList.remove("show"); clearTimeout(t._t); action.fn(); }; t.appendChild(b); }
+  t.classList.add("show"); clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove("show"), ms);
+}
 function confirmBox(html, okText = "OK", danger = false) {
   return new Promise(res => {
     const box = $("overlayBox");
@@ -1079,7 +1346,7 @@ async function buildExportPart() {
       project.last_export = Date.now(); project.last_export_photos = photoCount(); flushSave();
       st.blob = null; st.index++;
       if (st.index < st.parts.length) { $("exportParts").innerHTML = ""; await buildExportPart(); }
-      else { $("exportParts").innerHTML = `<div class="muted" style="margin-top:8px">All ${n > 1 ? n + " files" : "done"} exported. Merge them on the PC (member_report.py --merge) or import them into another iPad.</div>`; $("btnExportZip").disabled = false; }
+      else { $("exportParts").innerHTML = `<div class="muted" style="margin-top:8px">All ${n > 1 ? n + " files" : "done"} exported. Merge them on the PC (inspection_report_app.py) or import them into another iPad.</div>`; $("btnExportZip").disabled = false; }
     };
     $("btnSavePart").onclick = () => done("share"); $("btnDlPart").onclick = () => done("dl");
   } catch (e) { $("zipMsg").textContent = "Error: " + (e.message || e); $("btnExportZip").disabled = false; }
@@ -1098,7 +1365,7 @@ $("btnClear").onclick = async () => {
   if (!(await confirmBox(`<b>Erase the whole project (${n} ${elName().toLowerCase()}s with photos) from this iPad?</b><br>${unsaved ? `<b style="color:#b00020">${unsaved} photo${unsaved > 1 ? "s have" : " has"} NOT been exported since the last backup.</b> ` : "All photos are in the last export. "}Export a project zip first if you want to keep it.<br><br>Type <b>ERASE</b> to confirm:<br><input type="text" id="eraseWord" autocapitalize="characters" style="margin-top:6px">`, "Erase everything", true))) return;
   if (((document.getElementById("overlayBox").querySelector("#eraseWord") || {}).value || "").trim().toUpperCase() !== "ERASE") { toast("Not erased - you did not type ERASE", 3000); return; }
   await DB.clearPhotos(); urlCache.forEach(u => URL.revokeObjectURL(u)); urlCache.clear();
-  project = newProject(); project.modillions.push(newModillion("1", "1")); cur = 0; save(); lastDoc = null;
+  project = newProject(); project.modillions.push(newModillion("1", "1")); cur = 0; clearHistory(); save(); lastDoc = null;
   renderCapture(); showScreen("capture"); toast("New project started");
 };
 
@@ -1462,7 +1729,19 @@ async function buildDocx(proj, zoneFilter, progress) {
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (_) { }
   await loadState();
   applyTheme();
-  renderCapture();
+  await renderCapture();
+  resetShadow(); refreshHistoryUI();       // absorb anything rendering normalised, so history starts clean
+  $("btnUndo").onclick = () => stepHistory("undo", 1);
+  $("btnRedo").onclick = () => stepHistory("redo", 1);
+  $("btnHist").onclick = showHistory;
+  document.addEventListener("pointerdown", () => { if (saveTimer) flushSave(); }, true);   // a tap on any button first records pending typing as its own step
+  document.addEventListener("keydown", e => {
+    if (!(e.metaKey || e.ctrlKey) || String(e.key).toLowerCase() !== "z") return;
+    const t = e.target; if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
+    e.preventDefault(); stepHistory(e.shiftKey ? "redo" : "undo", 1);
+  });
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden" && histTimer) persistHistory(); });
+  window.addEventListener("pagehide", () => { if (histTimer) persistHistory(); });
   // iOS: after the keyboard closes the page can stay scrolled up - reset it
   document.addEventListener("focusout", () => setTimeout(() => { window.scrollTo(0, 0); document.documentElement.scrollTop = 0; document.body.scrollTop = 0; }, 50));
   if ("serviceWorker" in navigator && location.protocol === "https:") {
@@ -1470,7 +1749,7 @@ async function buildDocx(proj, zoneFilter, progress) {
   }
 })();
 // expose for tests
-window.__app = { get project() { return project; }, get cur() { return cur; }, buildDocx, exportZip, importZip, renderCapture, DB, showScreen, typeList };
+window.__app = { get project() { return project; }, get cur() { return cur; }, get undoStack() { return undoStack; }, get redoStack() { return redoStack; }, get trashSet() { return trashSet; }, stepHistory, purgeTrash, recordHistory, buildDocx, exportZip, importZip, renderCapture, DB, showScreen, typeList };
 </script>
 </body>
 </html>
